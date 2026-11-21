@@ -1,0 +1,56 @@
+name: 청패 공연 감시
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # 5분마다 (GitHub 사정으로 몇 분씩 늦어질 수 있음)
+  workflow_dispatch:         # Actions 탭에서 수동 실행
+
+permissions:
+  contents: write            # 60일 무활동 자동 정지를 막는 heartbeat 커밋용
+
+concurrency:
+  group: watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # 이전 상태(중복 알림 방지용)를 캐시에서 복원
+      - uses: actions/cache/restore@v4
+        with:
+          path: state
+          key: state-${{ github.run_id }}
+          restore-keys: state-
+
+      - name: 감시 실행
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: python watch.py
+
+      - uses: actions/cache/save@v4
+        if: success()
+        with:
+          path: state
+          key: state-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # 공개 저장소의 예약 실행은 60일간 커밋이 없으면 꺼지므로, 50일마다 빈 커밋
+      - name: heartbeat
+        if: success()
+        run: |
+          last=$(git log -1 --format=%ct)
+          if [ $(( $(date +%s) - last )) -gt $(( 50 * 86400 )) ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit --allow-empty -m "heartbeat: 예약 실행 유지"
+            git push
+          fi

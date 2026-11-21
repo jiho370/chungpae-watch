@@ -1,0 +1,409 @@
+"""청패 공연 감시 + 지메일 알림.
+
+    python watch.py               한 번 실행(5분마다 스케줄러가 부름)
+    python watch.py --dry-run     메일 대신 화면에 출력, 상태 저장 안 함
+    python watch.py --test-mail   테스트 메일 한 통 보내기
+    python watch.py --force-lists 주기와 상관없이 목록도 확인
+
+예매·결제는 하지 않습니다. 알림만 보냅니다.
+"""
+import argparse
+import os
+import sys
+import time
+import tomllib
+from datetime import date, datetime, timedelta, timezone
+
+from cpw import filters, net, notify, sources, state as statemod
+from cpw.net import FetchError, ParseError
+
+KST = timezone(timedelta(hours=9))
+HERE = os.path.dirname(os.path.abspath(__file__))
+WEEK = "월화수목금토일"
+
+
+def load_env(path: str) -> None:
+    if not os.path.exists(path):
+        return
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+
+
+def kst_ts(s: str) -> float:
+    """'2026-11-25 17:00:00' (KST) → epoch."""
+    return datetime.strptime(s[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=KST).timestamp()
+
+
+def fmt_date(d: str, t: str = "") -> str:
+    try:
+        wd = WEEK[date.fromisoformat(d).weekday()]
+        return f"{d}({wd})" + (f" {t}" if t else "")
+    except ValueError:
+        return d
+
+
+class Run:
+    def __init__(self, cfg, st, now):
+        self.cfg, self.st, self.now = cfg, st, now
+        self.today = datetime.fromtimestamp(now, KST).date().isoformat()
+        self.err: dict[str, str] = {}
+        self.ok: set[str] = set()
+        self.new: list[str] = []          # 새로 대상이 된 상품코드
+        self.cp_added: list[str] = []     # 청패에 새로 올라온 (이미 아는) 대상 공연
+        self.seat_alerts: list[dict] = []
+        self.status: dict[str, list] = {}  # 상품코드 → 이번 실행의 저가석 현황
+
+    def guard(self, key, fn, *a):
+        try:
+            r = fn(*a)
+            self.ok.add(key)
+            return r
+        except (FetchError, ParseError) as e:
+            self.err.setdefault(key, f"{type(e).__name__}: {e}")
+            return None
+
+    # ── NOL 상품 캐시 ──
+    def product(self, code: str):
+        c = self.st["products"].get(code)
+        if c and self.now - c.get("fetched", 0) < 24 * 3600:
+            return c
+        p = self.guard("NOL 상품", sources.nol_product, code)
+        if p is None:
+            return c  # 실패하면 예전 값이라도 사용
+        p["fetched"] = self.now
+        if c and "sched" in c:
+            p["sched"], p["sched_at"] = c["sched"], c.get("sched_at", 0)
+        self.st["products"][code] = p
+        return p
+
+    # ── 1. 목록 ──
+    def lists(self):
+        cfg, st = self.cfg, self.st
+        perfs = []
+        for g in cfg["chungpae"]["genres"]:
+            r = self.guard("청패 목록", sources.chungpae_list, g)
+            perfs += r or []
+        sp = self.guard("서울시향 목록", sources.seoulphil_list) or []
+        cp_codes = {p["goods"] for p in perfs}
+        for p in sp:
+            if p["goods"] in cp_codes:
+                p["chungpae"] = True
+        # 청패 항목을 먼저 처리(제목·청패 여부가 더 정확)
+        for p in perfs + sp:
+            self.consider(p)
+        for code in cfg["watch"].get("extra_goods", []):
+            code = str(code)
+            if code not in st["goods"] or not st["goods"][code].get("qualified"):
+                prod = self.product(code)
+                if prod:
+                    st["goods"][code] = {
+                        "title": prod["title"] or code, "venue": prod["venue"], "start": "", "end": "",
+                        "chungpae": code in cp_codes, "qualified": True, "tier": "직접 지정",
+                        "reason": "config의 extra_goods", "max_price": cfg["watch"]["extra_max_price"],
+                        "link": sources.nol_url(code), "first_seen": self.now,
+                    }
+        if cfg["popularity"].get("enabled"):
+            self.popularity()
+        st["last_lists"] = self.now
+
+    def consider(self, p: dict):
+        cfg, st = self.cfg, self.st
+        code = p["goods"]
+        if not code or not p.get("bookable", True):
+            return
+        if p.get("end") and p["end"] < self.today:
+            return
+        until = cfg["filter"].get("until", "")
+        if until and p.get("start") and p["start"] > until:
+            return
+        g = st["goods"].get(code)
+        if g is not None:
+            if p["chungpae"] and not g.get("chungpae"):
+                g["chungpae"] = True
+                if g.get("qualified") and st["initialized"]:
+                    self.cp_added.append(code)
+            if p["source"] == "서울시향" and not g.get("sp_link"):
+                g["sp_link"] = p["link"]
+            if p.get("end", "") > g.get("end", ""):
+                g["end"] = p["end"]
+            return
+        if p["venue"] and not filters.venue_ok(p["venue"], cfg):
+            return  # 공연장 밖: 상품 페이지도 열지 않음
+        if filters.excluded(p, cfg):
+            return
+        prod = self.product(code)
+        if prod is None:
+            return  # 다음 실행에서 다시 시도
+        venue = p["venue"] or prod["venue"]
+        if not filters.venue_ok(venue, cfg):
+            return
+        tier, reason = filters.match_tier(p, prod["grades"], cfg)
+        g = {
+            "title": p["title"], "venue": venue, "start": p["start"], "end": p["end"],
+            "time": p.get("time", ""), "chungpae": p["chungpae"], "link": sources.nol_url(code),
+            "first_seen": self.now, "qualified": False, "pinned_at": 0,
+        }
+        if p["source"] == "서울시향":
+            g["sp_link"] = p["link"]
+        if tier:
+            cheap = filters.cheap_grades(prod["grades"], tier["max_price"], cfg)
+            price_unknown = not prod["grades"]
+            g.update(tier=tier["name"], reason=reason, max_price=tier["max_price"],
+                     price_unknown=price_unknown)
+            g["qualified"] = bool(cheap) or tier.get("always_notify", False) or price_unknown
+        st["goods"][code] = g
+        if g["qualified"] and st["initialized"]:
+            self.new.append(code)
+
+    def popularity(self):
+        cfg, st = self.cfg, self.st
+        pc = cfg["popularity"]
+        for code, g in st["goods"].items():
+            if g.get("qualified") or (g.get("end") and g["end"] < self.today):
+                continue
+            if self.now - g.get("pinned_at", 0) < pc["check_interval_hours"] * 3600:
+                continue
+            n = self.guard("NOL 찜 수", sources.nol_pinned, code)
+            if n is None:
+                continue
+            g["pinned_at"], g["pinned"] = self.now, n
+            if n < pc["pinned_threshold"]:
+                continue
+            prod = self.product(code)
+            if prod and filters.cheap_grades(prod["grades"], pc["max_price"], cfg):
+                g.update(qualified=True, tier="인기", reason=f"NOL 찜 {n}명", max_price=pc["max_price"])
+                if st["initialized"]:
+                    self.new.append(code)
+
+    # ── 2. 잔여석 ──
+    def seats(self):
+        cfg, st = self.cfg, self.st
+        sc = cfg["schedule"]
+        for code, g in list(st["goods"].items()):
+            if not g.get("qualified") or (g.get("end") and g["end"] < self.today):
+                continue
+            if code not in self.new and self.now < st["next_check"].get(code, 0):
+                continue
+            prod = self.product(code)
+            if not prod:
+                continue
+            cheap = filters.cheap_grades(prod["grades"], g.get("max_price", 0), cfg)
+            if not cheap:
+                continue
+            if self.now - prod.get("sched_at", 0) > 6 * 3600 or "sched" not in prod:
+                end = max(g.get("end") or self.today, self.today)
+                end = (date.fromisoformat(end) + timedelta(days=1)).isoformat()
+                sch = self.guard("NOL 회차", sources.nol_schedules, code, prod["place_code"], self.today, end)
+                if sch is None:
+                    continue
+                prod["sched"], prod["sched_at"] = sch, self.now
+            total, any_zero, rows = 0, False, []
+            for s in prod["sched"]:
+                if s.get("playDate", "") < self.today:
+                    continue
+                seq = s["playSeq"]
+                try:
+                    opn, cls = kst_ts(s["saleOpenTime"]), kst_ts(s["saleCloseTime"])
+                except (KeyError, ValueError):
+                    opn, cls = 0, float("inf")
+                if self.now > cls:
+                    continue
+                if self.now < opn:
+                    for sg in cheap:
+                        st["seats"].setdefault(f"{code}:{seq}:{sg}", 0)
+                        st.setdefault("presale", {})[f"{code}:{seq}"] = True
+                    rows.append({"date": s["playDate"], "time": s.get("playTime", ""),
+                                 "presale": s["saleOpenTime"][:16]})
+                    any_zero = True
+                    continue
+                rem = self.guard("NOL 잔여석", sources.nol_remaining, code, seq)
+                if rem is None:
+                    continue
+                if rem and all(v == 3000 for v in rem.values()):
+                    continue  # 외부 연동 공연: 잔여 수가 실제 값이 아님
+                was_presale = st.get("presale", {}).pop(f"{code}:{seq}", False)
+                for sg, gr in cheap.items():
+                    if sg not in rem:
+                        continue
+                    cur = rem[sg]
+                    key = f"{code}:{seq}:{sg}"
+                    prev = st["seats"].get(key)
+                    if prev == 0 and cur > 0 and st["initialized"] and code not in self.new:
+                        self.seat_alerts.append({
+                            "code": code, "date": s["playDate"], "time": s.get("playTime", ""),
+                            "grade": gr["name"], "price": gr["price"], "prev": prev, "cur": cur,
+                            "open": was_presale})
+                    st["seats"][key] = cur
+                    total += cur
+                    any_zero |= cur == 0
+                    rows.append({"date": s["playDate"], "time": s.get("playTime", ""),
+                                 "grade": gr["name"], "price": gr["price"], "cur": cur})
+            self.status[code] = rows
+            plenty = not any_zero and total >= sc["plenty_threshold"]
+            st["next_check"][code] = self.now + sc["plenty_interval_min"] * 60 if plenty else 0
+
+    # ── 3. 메일 ──
+    def describe(self, code: str, head: str) -> str:
+        g = self.st["goods"][code]
+        prod = self.st["products"].get(code, {})
+        lines = [f"■ {head}: {g['title']}"]
+        when = fmt_date(g.get("start", ""), g.get("time", ""))
+        if g.get("end") and g["end"] != g.get("start"):
+            when += f" ~ {g['end']}"
+        lines.append(f"  일시: {when}")
+        lines.append(f"  장소: {g.get('venue', '')}")
+        lines.append(f"  분류: {g.get('tier', '')} ({g.get('reason', '')})")
+        grades = filters.usable_grades(prod.get("grades", {}), self.cfg)
+        if grades:
+            gl = sorted(grades.values(), key=lambda x: -x["price"])
+            lines.append("  가격: " + ", ".join(f"{x['name']} {x['price']:,}" for x in gl))
+        elif g.get("price_unknown"):
+            lines.append("  가격: 확인 필요(페이지에서 가격을 읽지 못함)")
+        if prod.get("open_time") and prod["open_time"][:4] != "9999":
+            try:
+                if self.now < kst_ts(prod["open_time"]) < self.now + 180 * 86400:  # 먼 미래 값은 '미정' 표시
+                    lines.append(f"  티켓 오픈: {prod['open_time'][:16]}")
+            except ValueError:
+                pass
+        rows = self.status.get(code)
+        if rows:
+            lines.append(f"  저가석({g.get('max_price', 0):,}원 이하) 현황:")
+            for r in rows:
+                if "presale" in r:
+                    lines.append(f"    {fmt_date(r['date'], r['time'])}  판매 전 (오픈 {r['presale']})")
+                else:
+                    st = f"{r['cur']}석" if r["cur"] else "매진 → 취소표 감시 중"
+                    lines.append(f"    {fmt_date(r['date'], r['time'])}  {r['grade']} {r['price']:,}원: {st}")
+        lines.append(f"  예매(NOL): {g['link']}")
+        if g.get("sp_link"):
+            lines.append(f"  서울시향 안내: {g['sp_link']}")
+        if g.get("chungpae"):
+            lines.append(f"  청패 포인트: {sources.CP_PAGE} 에서 '포인트로 예매하기'")
+        else:
+            lines.append("  청패: 아직 청패 목록에 없음(올라오면 따로 알려 드림)")
+        return "\n".join(lines)
+
+    def compose(self):
+        st, pre = self.st, self.cfg["mail"]["subject_prefix"]
+        parts, subj = [], []
+        for a in self.seat_alerts:
+            g = st["goods"][a["code"]]
+            head = "티켓 오픈" if a["open"] else "저가석 풀림"
+            parts.append(
+                f"■ {head}: {g['title']}\n"
+                f"  일시: {fmt_date(a['date'], a['time'])}\n"
+                f"  장소: {g.get('venue', '')}\n"
+                f"  좌석: {a['grade']} {a['price']:,}원 — {a['prev']}석 → {a['cur']}석\n"
+                f"  예매(NOL): {g['link']}\n"
+                + (f"  청패 포인트: {sources.CP_PAGE} 에서 '포인트로 예매하기'\n" if g.get("chungpae")
+                   else "  청패: 아직 청패 목록에 없음\n"))
+        if self.seat_alerts:
+            a = self.seat_alerts[0]
+            t = st["goods"][a["code"]]["title"]
+            subj.append(f"저가석 풀림 {t} {a['grade']} {a['cur']}석"
+                        + (f" 외 {len(self.seat_alerts) - 1}건" if len(self.seat_alerts) > 1 else ""))
+        for code in dict.fromkeys(self.new):
+            parts.append(self.describe(code, "새 공연"))
+        if self.new:
+            t = st["goods"][self.new[0]]["title"]
+            subj.append(f"새 공연 {t}" + (f" 외 {len(set(self.new)) - 1}건" if len(set(self.new)) > 1 else ""))
+        for code in dict.fromkeys(self.cp_added):
+            parts.append(self.describe(code, "청패에 등록됨(포인트 사용 가능)"))
+        if self.cp_added:
+            subj.append(f"청패 등록 {st['goods'][self.cp_added[0]]['title']}")
+        # 오류: 같은 오류는 한 번만, 복구되면 한 번
+        for k, msg in self.err.items():
+            if k not in st["errors"]:
+                st["errors"][k] = {"since": self.now, "msg": msg}
+                parts.append(f"■ 오류({k}): {msg}\n  사이트 구조 변경이나 접속 차단일 수 있습니다. 복구되면 다시 알려 드립니다.")
+                subj.append(f"오류 {k}")
+        for k in list(st["errors"]):
+            if k in self.ok and k not in self.err:
+                since = datetime.fromtimestamp(st["errors"][k]["since"], KST).strftime("%m-%d %H:%M")
+                parts.append(f"■ 복구됨({k}): {since}부터 이어진 오류가 해결되었습니다.")
+                subj.append(f"복구 {k}")
+                del st["errors"][k]
+        if not parts:
+            return None
+        return f"{pre} " + " / ".join(subj), "\n\n".join(parts) + "\n"
+
+    def baseline_mail(self):
+        st, pre = self.st, self.cfg["mail"]["subject_prefix"]
+        codes = [c for c, g in st["goods"].items() if g.get("qualified")]
+        codes.sort(key=lambda c: st["goods"][c].get("start", ""))
+        body = [f"감시를 시작합니다. 지금 조건에 맞는 공연은 {len(codes)}개입니다.",
+                "앞으로는 새 공연·저가석 풀림·청패 등록이 생길 때만 메일이 옵니다.", ""]
+        body += [self.describe(c, "대상") for c in codes]
+        if self.err:
+            body.append("■ 첫 실행 중 오류: " + "; ".join(f"{k}: {v}" for k, v in self.err.items()))
+            for k, v in self.err.items():
+                st["errors"][k] = {"since": self.now, "msg": v}
+        return f"{pre} 감시 시작 — 대상 {len(codes)}개", "\n\n".join(body) + "\n"
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--test-mail", action="store_true")
+    ap.add_argument("--force-lists", action="store_true")
+    ap.add_argument("--save", action="store_true", help="--dry-run이어도 상태 저장(테스트용)")
+    ap.add_argument("--config", default=os.path.join(HERE, "config.toml"))
+    ap.add_argument("--state", default=os.path.join(HERE, "state", "state.json"))
+    a = ap.parse_args()
+
+    load_env(os.path.join(HERE, ".env"))
+    with open(a.config, "rb") as f:
+        cfg = tomllib.load(f)
+    to = cfg["mail"].get("to", "")
+
+    if a.test_mail:
+        notify.send(f"{cfg['mail']['subject_prefix']} 테스트 메일",
+                    "청패 공연 감시 스크립트의 테스트 메일입니다. 이 메일이 보이면 발송 설정이 끝난 것입니다.", to)
+        print("테스트 메일 발송 완료")
+        return 0
+
+    net.set_delay(cfg["schedule"]["request_delay_sec"])
+    st = statemod.load(a.state)
+    st.setdefault("goods", {})
+    run = Run(cfg, st, time.time())
+
+    if a.force_lists or not st["initialized"] or \
+            run.now - st.get("last_lists", 0) >= cfg["schedule"]["lists_interval_min"] * 60 - 30:
+        run.lists()
+    run.seats()
+
+    if not st["initialized"]:
+        if not st["goods"]:
+            print("첫 실행인데 공연을 하나도 못 읽었습니다:", run.err, file=sys.stderr)
+            return 1
+        mail = run.baseline_mail()
+        st["initialized"] = True
+    else:
+        mail = run.compose()
+
+    if mail:
+        subject, body = mail
+        if a.dry_run:
+            print("=" * 60, "\n제목:", subject, "\n" + body)
+        else:
+            try:
+                notify.send(subject, body, to)
+            except Exception as e:  # noqa: BLE001
+                # 상태를 저장하지 않고 실패로 끝냄 → 다음 실행에서 같은 알림을 다시 시도
+                print("메일 발송 실패:", e, file=sys.stderr)
+                return 2
+            print("메일 발송:", subject)
+    else:
+        print("알림 없음", "(오류 지속: " + ", ".join(st["errors"]) + ")" if st["errors"] else "")
+
+    if not a.dry_run or a.save:
+        statemod.save(a.state, st)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
