@@ -2,12 +2,24 @@
 # 이 파일만 고치면 동작이 바뀝니다. (TOML 형식: 문자열은 "따옴표", 목록은 [ ... ])
 
 [schedule]
-# 공연 목록(청패·서울시향) 확인 주기(분). 실행은 5분마다 되지만 목록은 이 간격으로만 확인합니다.
-lists_interval_min = 30
-# 저가석이 매진된 공연은 매 실행(5분)마다 잔여석을 확인합니다(취소표 감시).
-# 저가석이 넉넉히 남은 공연은 아래 간격으로만 확인합니다.
-plenty_interval_min = 30
+# 시간은 모두 한국 시간(KST)입니다.
+
+# ── 업무시간: 새 공연 목록 확인 + 저가석이 넉넉한 공연 확인 ──
+# 이 시간 밖에서는 새 공연을 찾지 않습니다(다음 업무시간에 한꺼번에 알림).
+business_days = ["월", "화", "수", "목", "금"]
+business_hours = ["09:00", "18:00"]
+business_interval_min = 30
 plenty_threshold = 20          # 저가석 합계가 이 수 이상이면 '넉넉함'
+
+# ── 저가석 매진 공연(취소표 감시) 확인 간격 ──
+# 아래 시간대에 해당하면 그 간격, 아니면 soldout_default_min.
+# ※ 실제 실행 시각은 .github/workflows/watch.yml의 cron이 정합니다(지금 값에 맞춰 둠).
+#   간격을 더 짧게 바꾸려면 cron도 같이 바꿔야 합니다.
+soldout_default_min = 5
+soldout_intervals = [
+  { from = "01:00", to = "06:00", every_min = 60 },
+  { from = "06:00", to = "08:00", every_min = 30 },
+]
 # 요청 사이 대기(초). 사이트 부담을 줄이기 위한 값이라 너무 줄이지 마세요.
 request_delay_sec = 0.7
 

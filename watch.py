@@ -46,10 +46,33 @@ def fmt_date(d: str, t: str = "") -> str:
         return d
 
 
+def _hm(s: str) -> int:
+    h, m = s.split(":")
+    return int(h) * 60 + int(m)
+
+
+def in_business(dt: datetime, sc: dict) -> bool:
+    if WEEK[dt.weekday()] not in sc.get("business_days", list(WEEK)):
+        return False
+    start, end = (_hm(x) for x in sc["business_hours"])
+    return start <= dt.hour * 60 + dt.minute < end
+
+
+def soldout_interval(dt: datetime, sc: dict) -> int:
+    t = dt.hour * 60 + dt.minute
+    for w in sc.get("soldout_intervals", []):
+        a, b = _hm(w["from"]), _hm(w["to"])
+        if (a <= t < b) if a <= b else (t >= a or t < b):
+            return int(w["every_min"])
+    return int(sc["soldout_default_min"])
+
+
 class Run:
     def __init__(self, cfg, st, now):
         self.cfg, self.st, self.now = cfg, st, now
-        self.today = datetime.fromtimestamp(now, KST).date().isoformat()
+        self.dt = datetime.fromtimestamp(now, KST)
+        self.today = self.dt.date().isoformat()
+        self.business = in_business(self.dt, cfg["schedule"])
         self.err: dict[str, str] = {}
         self.ok: set[str] = set()
         self.new: list[str] = []          # 새로 대상이 된 상품코드
@@ -183,11 +206,20 @@ class Run:
     def seats(self):
         cfg, st = self.cfg, self.st
         sc = cfg["schedule"]
+        last_check, plenty_map = st.setdefault("last_check", {}), st.setdefault("plenty", {})
+        so_min = soldout_interval(self.dt, sc)
         for code, g in list(st["goods"].items()):
             if not g.get("qualified") or (g.get("end") and g["end"] < self.today):
                 continue
-            if code not in self.new and self.now < st["next_check"].get(code, 0):
-                continue
+            if code not in self.new and code in last_check:
+                elapsed = (self.now - last_check[code]) / 60
+                if plenty_map.get(code):
+                    # 넉넉한 공연: 업무시간에만, 업무 주기로
+                    if not self.business or elapsed < sc["business_interval_min"] - 5:
+                        continue
+                elif elapsed < so_min - min(so_min / 2, 15):
+                    # 매진 공연: 시간대별 주기 (cron 지연을 감안해 여유를 둠)
+                    continue
             prod = self.product(code)
             if not prod:
                 continue
@@ -243,8 +275,8 @@ class Run:
                     rows.append({"date": s["playDate"], "time": s.get("playTime", ""),
                                  "grade": gr["name"], "price": gr["price"], "cur": cur})
             self.status[code] = rows
-            plenty = not any_zero and total >= sc["plenty_threshold"]
-            st["next_check"][code] = self.now + sc["plenty_interval_min"] * 60 if plenty else 0
+            last_check[code] = self.now
+            plenty_map[code] = not any_zero and total >= sc["plenty_threshold"]
 
     # ── 3. 메일 ──
     def describe(self, code: str, head: str) -> str:
@@ -371,8 +403,9 @@ def main():
     st.setdefault("goods", {})
     run = Run(cfg, st, time.time())
 
-    if a.force_lists or not st["initialized"] or \
-            run.now - st.get("last_lists", 0) >= cfg["schedule"]["lists_interval_min"] * 60 - 30:
+    lists_due = run.business and \
+        run.now - st.get("last_lists", 0) >= (cfg["schedule"]["business_interval_min"] - 5) * 60
+    if a.force_lists or not st["initialized"] or lists_due:
         run.lists()
     run.seats()
 
