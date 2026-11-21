@@ -9,7 +9,7 @@ on:
         description: "실행 모드"
         type: choice
         default: run
-        options: [run, test-claude, test-email]
+        options: [run, insights, test-claude, test-email]
 
 permissions:
   contents: write          # flight/data/ 기록을 커밋하기 위해 필요
@@ -55,11 +55,12 @@ jobs:
           case "$MODE" in
             test-claude) python monitor.py --test-claude ;;
             test-email)  python monitor.py --test-email ;;
+            insights)    python monitor.py --insights 5 ;;
             *)           python monitor.py ;;
           esac
 
       - name: Commit price history
-        if: ${{ (inputs.mode || 'run') == 'run' }}
+        if: ${{ contains(fromJSON('["run","insights"]'), inputs.mode || 'run') }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

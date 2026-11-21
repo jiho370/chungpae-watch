@@ -463,6 +463,8 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--test-email", action="store_true")
     parser.add_argument("--test-claude", action="store_true")
+    parser.add_argument("--insights", type=int, default=0, metavar="N",
+                        help="가장 싼 도착지 N곳의 평소 가격대 비교 (검색 N회 소모)")
     args = parser.parse_args()
 
     if args.test_claude:
@@ -491,6 +493,45 @@ def main() -> int:
     usage = load_json(USAGE_FILE, {})
     today = today_kst()
     serp = Serp(os.environ["SERPAPI_KEY"].strip(), cfg["monthly_search_limit"], usage)
+
+    if args.insights:
+        # 가장 최근 기록에서 싼 도착지 N곳을 Google Flights로 조회해 평소 가격대와 비교
+        rows = []
+        for code, entry in history.get("destinations", {}).items():
+            if not entry["prices"]:
+                continue
+            last_d = max(p["d"] for p in entry["prices"])
+            best = min((p for p in entry["prices"] if p["d"] == last_d), key=lambda p: p["p"])
+            rows.append((best["p"], code, entry, best))
+        rows.sort(key=lambda r: r[0])
+        for explore_price, code, entry, best in rows[: args.insights]:
+            nights = 2 if best["dur"] == 1 else 7  # Explore 기간: 주말 → 2박, 1주 → 7박
+            cand = {"code": code, "name": entry.get("name", code), "country": entry.get("country", ""),
+                    "start": best["start"]}
+            try:
+                results = check_candidate(serp, {**cfg, "trip_lengths_days": [nights]}, cand)
+            except (RuntimeError, QuotaExceeded) as exc:
+                print(f"{cand['name']} ({code}): 조회 실패 - {exc}")
+                continue
+            if not results:
+                print(f"{cand['name']} ({code}) {best['start']}: 경유 조건을 통과한 항공편 없음")
+                continue
+            d = results[0]
+            typical = d["typical_range"]
+            typical_s = f"{won(typical[0])}~{won(typical[1])}" if typical and len(typical) >= 2 else "정보 없음"
+            if d["discount"] is None:
+                disc = "-"
+            elif d["discount"] >= 0:
+                disc = f"{d['discount'] * 100:.0f}% 저렴"
+            else:
+                disc = f"{-d['discount'] * 100:.0f}% 비쌈"
+            print(f"{d['dest_name']} ({code}) {d['outbound']}~{d['return']} | Explore {won(explore_price)} | "
+                  f"수하물 포함 {won(d['total'])}{' (추정 포함)' if d['bag_estimated'] else ''} | "
+                  f"Google 판정 {d['price_level']} | 평소 {typical_s} | 평소 하한 대비 {disc} | "
+                  f"{', '.join(d['airlines'])}")
+        print(f"이번 달 SerpApi 사용: {usage['count']}/{cfg['monthly_search_limit']}회")
+        save_json(USAGE_FILE, usage)
+        return 0
 
     deals: list[dict] = []
     try:
