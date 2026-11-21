@@ -129,16 +129,15 @@ class Run:
             if not prod:
                 continue
             cap = cfg["watch"].get("extra_max_price", 0)
-            label = f"{cap:,}원 이하"
-            if not cap:  # 0이면 그 공연의 가장 싼 등급만
-                prices = [x["price"] for x in filters.usable_grades(prod["grades"], cfg).values()]
-                cap = min(prices) if prices else 0
-                label = "가장 싼 등급"
+            cheapest = not cap  # 0이면 그 공연의 가장 싼 등급만 (가격 상한 없음)
+            label = "가장 싼 등급" if cheapest else f"{cap:,}원 이하"
+            cap = cap or 10 ** 9
             st["goods"][code] = {
                 "title": old.get("title") or prod["title"] or code, "venue": old.get("venue") or prod["venue"],
                 "start": old.get("start", ""), "end": old.get("end", ""), "time": old.get("time", ""),
+                "registered": old.get("registered", ""), "pinned": old.get("pinned"),
                 "chungpae": old.get("chungpae") or code in cp_codes, "qualified": True, "tier": "직접 지정",
-                "reason": f"config의 extra_goods, {label}", "max_price": cap,
+                "reason": f"config의 extra_goods, {label}", "max_price": cap, "cheapest_only": cheapest,
                 "link": sources.nol_url(code), "first_seen": self.now,
             }
         if cfg["popularity"].get("enabled"):
@@ -181,14 +180,16 @@ class Run:
             "title": p["title"], "venue": venue, "start": p["start"], "end": p["end"],
             "time": p.get("time", ""), "chungpae": p["chungpae"], "link": sources.nol_url(code),
             "first_seen": self.now, "qualified": False, "pinned_at": 0,
+            "registered": p.get("registered", ""),
         }
         if p["source"] == "서울시향":
             g["sp_link"] = p["link"]
         if tier:
-            cheap = filters.cheap_grades(prod["grades"], tier["max_price"], cfg)
+            cheapest = tier.get("cheapest_only", False)
+            cheap = filters.cheap_grades(prod["grades"], tier["max_price"], cfg, cheapest)
             price_unknown = not prod["grades"]
             g.update(tier=tier["name"], reason=reason, max_price=tier["max_price"],
-                     price_unknown=price_unknown)
+                     cheapest_only=cheapest, price_unknown=price_unknown)
             g["qualified"] = bool(cheap) or tier.get("always_notify", False) or price_unknown
         st["goods"][code] = g
         if g["qualified"] and st["initialized"]:
@@ -197,20 +198,24 @@ class Run:
     def popularity(self):
         cfg, st = self.cfg, self.st
         pc = cfg["popularity"]
+        tier = filters.tier_by_name(cfg, pc.get("tier", "")) or cfg["filter"]["tiers"][-1]
+        cheapest = tier.get("cheapest_only", False)
         for code, g in st["goods"].items():
-            if g.get("qualified") or (g.get("end") and g["end"] < self.today):
+            if g.get("end") and g["end"] < self.today:
                 continue
+            # 찜 수는 대상 공연도 갱신(메일 정렬용), 미대상 공연은 기준을 넘는지 확인
             if self.now - g.get("pinned_at", 0) < pc["check_interval_hours"] * 3600:
                 continue
             n = self.guard("NOL 찜 수", sources.nol_pinned, code)
             if n is None:
                 continue
             g["pinned_at"], g["pinned"] = self.now, n
-            if n < pc["pinned_threshold"]:
+            if g.get("qualified") or n < pc["pinned_threshold"]:
                 continue
             prod = self.product(code)
-            if prod and filters.cheap_grades(prod["grades"], pc["max_price"], cfg):
-                g.update(qualified=True, tier="인기", reason=f"NOL 찜 {n}명", max_price=pc["max_price"])
+            if prod and filters.cheap_grades(prod["grades"], tier["max_price"], cfg, cheapest):
+                g.update(qualified=True, tier=f"{tier['name']}(유명)", reason=f"NOL 찜 {n}명",
+                         max_price=tier["max_price"], cheapest_only=cheapest)
                 if st["initialized"]:
                     self.new.append(code)
 
@@ -223,7 +228,7 @@ class Run:
         for code, g in list(st["goods"].items()):
             if not g.get("qualified") or (g.get("end") and g["end"] < self.today):
                 continue
-            if code not in self.new and code in last_check:
+            if st["initialized"] and code not in self.new and code in last_check:  # 첫 판정 때는 전부 확인
                 elapsed = (self.now - last_check[code]) / 60
                 if plenty_map.get(code):
                     # 넉넉한 공연: 업무시간에만, 업무 주기로
@@ -235,7 +240,7 @@ class Run:
             prod = self.product(code)
             if not prod:
                 continue
-            cheap = filters.cheap_grades(prod["grades"], g.get("max_price", 0), cfg)
+            cheap = filters.cheap_grades(prod["grades"], g.get("max_price", 0), cfg, g.get("cheapest_only", False))
             if not cheap:
                 continue
             if self.now - prod.get("sched_at", 0) > 6 * 3600 or "sched" not in prod:
@@ -291,6 +296,13 @@ class Run:
             plenty_map[code] = not any_zero and total >= sc["plenty_threshold"]
 
     # ── 3. 메일 ──
+    def ordered(self, codes) -> list:
+        """최근 7일 안에 등록된 공연을 먼저, 그 안에서는 찜 많은 순."""
+        cut = (self.dt.date() - timedelta(days=7)).isoformat()
+        gs = self.st["goods"]
+        return sorted(dict.fromkeys(codes), key=lambda c: (
+            0 if (gs[c].get("registered") or "") >= cut else 1, -(gs[c].get("pinned") or 0)))
+
     def describe(self, code: str, head: str) -> str:
         g = self.st["goods"][code]
         prod = self.st["products"].get(code, {})
@@ -301,6 +313,13 @@ class Run:
         lines.append(f"  일시: {when}")
         lines.append(f"  장소: {g.get('venue', '')}")
         lines.append(f"  분류: {g.get('tier', '')} ({g.get('reason', '')})")
+        extra = []
+        if g.get("pinned") is not None:
+            extra.append(f"찜 {g['pinned']}명")
+        if g.get("registered"):
+            extra.append(f"등록 {g['registered']}")
+        if extra:
+            lines.append("  " + " · ".join(extra))
         grades = filters.usable_grades(prod.get("grades", {}), self.cfg)
         if grades:
             gl = sorted(grades.values(), key=lambda x: -x["price"])
@@ -317,7 +336,8 @@ class Run:
                 pass
         rows = self.status.get(code)
         if rows:
-            lines.append(f"  저가석({g.get('max_price', 0):,}원 이하) 현황:")
+            label = "가장 싼 등급" if g.get("cheapest_only") else f"{g.get('max_price', 0):,}원 이하"
+            lines.append(f"  감시 좌석({label}) 현황:")
             for r in rows:
                 if "presale" in r:
                     lines.append(f"    {fmt_date(r['date'], r['time'])}  판매 전 (오픈 {r['presale']})")
@@ -354,7 +374,8 @@ class Run:
             t = st["goods"][a["code"]]["title"]
             subj.append(f"저가석 풀림 {t} {a['grade']} {a['cur']}석"
                         + (f" 외 {len(self.seat_alerts) - 1}건" if len(self.seat_alerts) > 1 else ""))
-        for code in dict.fromkeys(self.new):
+        self.new = self.ordered(self.new)
+        for code in self.new:
             parts.append(self.describe(code, "새 공연"))
         if self.new:
             t = st["goods"][self.new[0]]["title"]
@@ -382,7 +403,7 @@ class Run:
     def baseline_mail(self, rebaseline=False):
         st, pre = self.st, self.cfg["mail"]["subject_prefix"]
         codes = [c for c, g in st["goods"].items() if g.get("qualified")]
-        codes.sort(key=lambda c: st["goods"][c].get("start", ""))
+        codes = self.ordered(codes)
         head = "설정 변경을 반영했습니다" if rebaseline else "감시를 시작합니다"
         body = [f"{head}. 지금 조건에 맞는 공연은 {len(codes)}개입니다.",
                 "앞으로는 새 공연·저가석 풀림·청패 등록이 생길 때만 메일이 옵니다.", ""]

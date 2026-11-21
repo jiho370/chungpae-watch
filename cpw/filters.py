@@ -16,8 +16,19 @@ def usable_grades(grades: dict, cfg: dict) -> dict:
     return {k: g for k, g in grades.items() if not any(b in g["name"] for b in bad)}
 
 
-def cheap_grades(grades: dict, max_price: int, cfg: dict) -> dict:
-    return {k: g for k, g in usable_grades(grades, cfg).items() if g["price"] <= max_price}
+def cheap_grades(grades: dict, max_price: int, cfg: dict, cheapest_only: bool = False) -> dict:
+    """감시할 등급. cheapest_only면 가장 싼 등급(들)만, 그 가격이 max_price 이하일 때."""
+    ug = usable_grades(grades, cfg)
+    if cheapest_only:
+        if not ug:
+            return {}
+        low = min(g["price"] for g in ug.values())
+        return {k: g for k, g in ug.items() if g["price"] == low and low <= max_price}
+    return {k: g for k, g in ug.items() if g["price"] <= max_price}
+
+
+def tier_by_name(cfg: dict, name: str):
+    return next((t for t in cfg["filter"]["tiers"] if t["name"] == name), None)
 
 
 def match_tier(perf: dict, grades: dict | None, cfg: dict):

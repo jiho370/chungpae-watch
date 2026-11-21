@@ -78,21 +78,24 @@ keywords = [
 ]
 # 키워드가 없어도 최고가 좌석이 이 가격 이상이면 대형 내한 공연으로 봅니다. 0이면 끔.
 min_top_price = 220000
-max_price = 20000
+# 유명 공연은 2만 원짜리 자리가 거의 없으므로 '가장 싼 등급'만 감시하고, 그 등급이 max_price 이하일 때만 대상
+cheapest_only = true
+max_price = 50000
 always_notify = false
 
 [popularity]
-# 위 티어에 안 걸린 공연이라도 NOL 찜 수가 이만큼 넘으면 알립니다(나중에 뜨는 공연 보완).
+# 이름에 안 걸린 공연이라도 NOL 찜 수가 이만큼 넘으면 '유명 공연'으로 보고,
+# 아래 티어(기본: 해외·스타·영화음악)와 같은 기준(가장 싼 등급, 5만 원 상한)을 적용합니다.
+# 찜 수는 올라온 뒤에 늘어나므로 주기적으로 다시 확인합니다.
 enabled = true
-pinned_threshold = 150
-max_price = 20000
-check_interval_hours = 6
+pinned_threshold = 300
+tier = "해외·스타·영화음악"
+check_interval_hours = 3
 
 [watch]
 # 자동 대상 외에 직접 지정할 공연 (NOL 상품코드 = nol.yanolja.com/ticket/products/ 뒤의 숫자)
 # 직접 지정한 공연은 공연장·가격 조건과 상관없이 감시합니다.
-extra_goods = [
-  "26013242",   # 더 베스트 오브 라흐마니노프 (롯데콘서트홀 12/11)
-]
+# 예: extra_goods = ["26014812"]
+extra_goods = []
 # 직접 지정한 공연의 저가석 기준 가격. 0이면 그 공연의 '가장 싼 등급'만 감시합니다.
 extra_max_price = 0
