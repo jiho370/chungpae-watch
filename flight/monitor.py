@@ -119,11 +119,35 @@ class Serp:
 
 # ─────────────────────────── 1단계: Explore ───────────────────────────
 
-def run_explore(serp: Serp, cfg: dict, history: dict, today: date) -> None:
-    """도착지별 오늘의 최저가를 기록한다."""
+def _record_explore(data: dict, duration: int, cfg: dict, history: dict, today: date) -> int:
     dests = history.setdefault("destinations", {})
     today_s = today.isoformat()
+    n = 0
+    for item in data.get("destinations", []):
+        code = (item.get("destination_airport") or {}).get("code")
+        price = to_price(item.get("flight_price"))
+        start = item.get("start_date")
+        if not code or not price or not start:
+            continue
+        try:
+            start_d = date.fromisoformat(start[:10])
+        except ValueError:
+            continue
+        if start_d <= today or in_excluded(start_d, cfg.get("exclude_date_ranges")):
+            continue
+        entry = dests.setdefault(code, {"prices": []})
+        entry["name"] = item.get("name") or entry.get("name") or code
+        entry["country"] = item.get("country") or entry.get("country", "")
+        entry["prices"].append({"d": today_s, "p": price, "start": start_d.isoformat(), "dur": duration})
+        entry["prices"] = entry["prices"][-200:]
+        n += 1
+    return n
+
+
+def run_explore(serp: Serp, cfg: dict, history: dict, today: date) -> None:
+    """도착지별 오늘의 최저가를 기록한다."""
     departures = cfg.get("explore_departures") or [cfg["origins"]]
+    working_dep = departures[0]
     for duration in cfg["explore_durations"]:
         data = {}
         for dep in departures:  # 앞에서부터 시도해서 결과가 나오는 첫 출발지를 쓴다
@@ -139,25 +163,45 @@ def run_explore(serp: Serp, cfg: dict, history: dict, today: date) -> None:
                     print(f"Explore 결과 없음 (출발지 {dep}, 기간 {duration}) → 다음 후보로")
                     continue
                 raise
+            working_dep = dep
             print(f"Explore 출발지 {dep}, 기간 {duration}: 도착지 {len(data.get('destinations', []))}곳")
             break
-        for item in data.get("destinations", []):
-            code = (item.get("destination_airport") or {}).get("code")
-            price = to_price(item.get("flight_price"))
-            start = item.get("start_date")
-            if not code or not price or not start:
-                continue
+        _record_explore(data, duration, cfg, history, today)
+
+    # 기본 Explore는 가까운 지역만 돌려줘서, 장거리는 도착 지역을 지정해 며칠에 한 번 따로 훑는다
+    rcfg = cfg.get("explore_regions") or {}
+    areas = rcfg.get("areas") or []
+    last = history.get("region_explore_last")
+    due = not last or (today - date.fromisoformat(last)).days >= rcfg.get("every_days", 3)
+    if not areas or not due:
+        return
+    for area in areas:
+        for duration in rcfg.get("durations", [2]):
             try:
-                start_d = date.fromisoformat(start[:10])
-            except ValueError:
-                continue
-            if start_d <= today or in_excluded(start_d, cfg.get("exclude_date_ranges")):
-                continue
-            entry = dests.setdefault(code, {"prices": []})
-            entry["name"] = item.get("name") or entry.get("name") or code
-            entry["country"] = item.get("country") or entry.get("country", "")
-            entry["prices"].append({"d": today_s, "p": price, "start": start_d.isoformat(), "dur": duration})
-            entry["prices"] = entry["prices"][-200:]
+                data = serp.search({
+                    "engine": "google_travel_explore",
+                    "departure_id": working_dep,
+                    "arrival_area_id": area["id"],
+                    "travel_duration": duration,
+                    "month": 0,
+                })
+            except RuntimeError as exc:
+                if "Empty results" in str(exc):
+                    print(f"장거리 Explore {area['name']}: 결과 없음")
+                    continue
+                raise
+            n = _record_explore(data, duration, cfg, history, today)
+            print(f"장거리 Explore {area['name']} (기간 {duration}): 도착지 {n}곳")
+    history["region_explore_last"] = today.isoformat()
+
+
+def price_cap(cfg: dict, country: str) -> int | None:
+    """도착 국가에 맞는 수하물 포함 가격 상한. 이보다 비싸면 싸져도 알리지 않는다."""
+    caps = cfg.get("price_caps") or {}
+    for group in caps.get("groups", []):
+        if country in group.get("countries", []):
+            return group["max_total"]
+    return caps.get("default")
 
 
 def baseline_ref(baseline: dict, code: str, start_iso: str) -> dict | None:
@@ -195,6 +239,9 @@ def pick_candidates(cfg: dict, history: dict, today: date, baseline: dict | None
         if not todays:
             continue
         best_today = min(todays, key=lambda p: p["p"])
+        cap = price_cap(cfg, entry.get("country", ""))
+        if cap and best_today["p"] > cap:
+            continue
         # 이전 날짜별 최저가
         daily: dict[str, int] = {}
         for p in entry["prices"]:
@@ -344,6 +391,9 @@ def check_candidate(serp: Serp, cfg: dict, cand: dict) -> list[dict]:
 
 
 def classify(deal: dict, cfg: dict) -> str | None:
+    cap = price_cap(cfg, deal.get("country", ""))
+    if cap and deal["total"] > cap:
+        return None
     d = deal["discount"]
     if d is not None:
         if d >= cfg["deal"]["hot_ratio"]:

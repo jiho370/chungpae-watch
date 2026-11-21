@@ -13,6 +13,25 @@ explore_departures: ["/m/0hsqf", "ICN", "GMP"]
 #   1 = 주말, 2 = 1주, 3 = 2주
 explore_durations: [1, 2]
 
+# 장거리(유럽·북미·오세아니아)는 기본 Explore에 안 나와서 도착 지역을 지정해 따로 훑는다.
+# 지역당 검색 1회 × every_days일에 한 번 (3곳이면 월 30회쯤)
+explore_regions:
+  every_days: 3
+  durations: [2]            # 2 = 1주
+  areas:
+    - {name: 유럽, id: "/m/02j9z"}
+    - {name: 북미, id: "/m/059g4"}
+    - {name: 오세아니아, id: "/m/05nrg"}
+
+# 수하물 포함 가격 상한. 평소보다 싸져도 이 금액을 넘으면 알리지 않는다.
+# countries는 Google 결과의 영문 국가명. 어느 그룹에도 없으면 default.
+price_caps:
+  default: 1000000          # 타 대륙 100만 원
+  groups:
+    - name: 동아시아
+      max_total: 500000     # 50만 원
+      countries: [Japan, China, Taiwan, Hong Kong, Macao, Macau, Mongolia, South Korea]
+
 # 2단계 정밀 검사에서 확인할 여행 기간 (일 단위, 출발일 기준 귀국일 = 출발일 + N)
 # 후보 1개당 이 목록 길이만큼 검색이 소모됩니다.
 trip_lengths_days: [3, 4, 5, 6, 8]
