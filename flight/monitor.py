@@ -458,7 +458,7 @@ def claude_summary(deals: list[dict], cfg: dict) -> str | None:
         return None
 
 
-def build_email(deals: list[dict], summary: str | None) -> tuple[str, str, str]:
+def build_email(deals: list[dict], summary: str | None, sample: bool = False) -> tuple[str, str, str]:
     hot = [d for d in deals if d["tier"] == "hot"]
     good = [d for d in deals if d["tier"] == "good"]
     parts = []
@@ -487,7 +487,7 @@ def build_email(deals: list[dict], summary: str | None) -> tuple[str, str, str]:
         body.append("")
     body.append("※ 수하물 요금 '(추정)'은 항공사별 대략적인 금액입니다. 예약 전 실제 요금을 확인하세요.")
     body.append("※ 경유 조건은 가는 편 기준으로 확인했습니다. 오는 편은 링크에서 확인하세요.")
-    return subject, "\n".join(body), build_email_html(deals, summary)
+    return subject, "\n".join(body), build_email_html(deals, summary, sample)
 
 
 WEEKDAYS = "월화수목금토일"
@@ -509,7 +509,7 @@ def _route_text(deal: dict) -> str:
     return f"경유 {deal['stops']}회 · " + ", ".join(parts)
 
 
-def build_email_html(deals: list[dict], summary: str | None) -> str:
+def build_email_html(deals: list[dict], summary: str | None, sample: bool = False) -> str:
     """Gmail에서 깨지지 않도록 표 + 인라인 스타일로만 만든 HTML 메일."""
     font = "-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic',sans-serif"
     ink, sub, line, bg = "#1f2328", "#6b7280", "#e5e7eb", "#f4f5f7"
@@ -593,6 +593,13 @@ def build_email_html(deals: list[dict], summary: str | None) -> str:
                         f'border-left:3px solid {ink};border-radius:8px;font-size:14px;line-height:1.6;'
                         f'color:{ink};">{paras}</td></tr></table>')
 
+    sample_html = ""
+    if sample:
+        sample_html = (f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+                       f'style="margin:0 0 16px;"><tr><td style="padding:12px 16px;background:#fffaeb;'
+                       f'border:1px solid #fedf89;border-radius:8px;font-size:14px;line-height:1.5;color:#93370d;">'
+                       f'<b>견본 메일</b> · 레이아웃 확인용으로 만든 가짜 데이터예요. '
+                       f'가격·날짜는 실제가 아니라서 링크를 눌러도 같은 가격이 나오지 않아요.</td></tr></table>')
     hot_n = sum(1 for d in deals if d["tier"] == "hot")
     head = f"오늘 찾은 항공권 {len(groups)}곳" + (f" · 떨이 {hot_n}건" if hot_n else "")
     return f"""<!doctype html><html><head><meta charset="utf-8">
@@ -605,7 +612,7 @@ def build_email_html(deals: list[dict], summary: str | None) -> str:
   <div style="font-size:12px;color:{sub};">떨이 항공권 · 인천/김포 출발</div>
   <div style="font-size:22px;font-weight:800;color:{ink};margin-top:2px;">{head}</div>
 </td></tr>
-<tr><td>{summary_html}{"".join(cards)}</td></tr>
+<tr><td>{sample_html}{summary_html}{"".join(cards)}</td></tr>
 <tr><td style="padding:4px 4px 0;font-size:12px;line-height:1.6;color:{sub};">
   수하물 '(추정)'은 항공사별 대략적인 금액이라 예약 전 실제 요금을 확인하세요.<br>
   경유 조건(6시간 이하 또는 24시간 이상)은 가는 편만 확인했습니다.
@@ -681,7 +688,8 @@ def main() -> int:
         return 0
 
     if args.test_email:
-        _, body, html = build_email(SAMPLE_DEALS, "테스트 메일입니다. 아래는 견본 데이터로 만든 레이아웃이에요.")
+        _, body, html = build_email(SAMPLE_DEALS, None, sample=True)
+        body = "[견본] 아래 가격·날짜는 레이아웃 확인용 가짜 데이터입니다.\n\n" + body
         send_email("[떨이 항공권] 테스트 메일 (견본)", body, html)
         print("테스트 메일을 보냈습니다.")
         return 0
