@@ -36,9 +36,9 @@
 1. Google 계정에서 2단계 인증을 켜고 **앱 비밀번호**(16자리)를 만듭니다.
 2. 이 폴더를 GitHub 저장소로 올립니다.
 3. 저장소 **Settings → Secrets and variables → Actions → New repository secret**에서 다음을 추가합니다.
-   - `GMAIL_USER`: 보내는 지메일 주소
-   - `GMAIL_APP_PASSWORD`: 앱 비밀번호
-   - `MAIL_TO`: 받는 주소 (보내는 주소와 같으면 생략 가능)
+   - `SMTP_USER`: 보내는 지메일 주소
+   - `SMTP_PASS`: 앱 비밀번호
+   - `EMAIL_TO`: 받는 주소 (보내는 주소와 같으면 생략 가능)
 4. **Actions** 탭에서 워크플로를 켜고 "청패 공연 감시" → **Run workflow**로 한 번 실행합니다. "감시 시작" 메일이 오면 설정이 끝난 것입니다.
 
 이후로는 5분마다 자동 실행됩니다. 목록은 30분마다, 저가석이 매진된 공연은 5분마다, 저가석이 넉넉한 공연은 30분마다 확인합니다.

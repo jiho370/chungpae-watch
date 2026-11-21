@@ -5,11 +5,12 @@ from email.message import EmailMessage
 
 
 def send(subject: str, body: str, to: str = "") -> None:
-    user = os.environ.get("GMAIL_USER", "").strip()
-    pw = os.environ.get("GMAIL_APP_PASSWORD", "").replace(" ", "").strip()
-    to = (to or os.environ.get("MAIL_TO", "") or user).strip()
+    env = os.environ.get
+    user = (env("SMTP_USER") or env("GMAIL_USER") or "").strip()
+    pw = (env("SMTP_PASS") or env("GMAIL_APP_PASSWORD") or "").replace(" ", "").strip()
+    to = (to or env("EMAIL_TO") or env("MAIL_TO") or user).strip()
     if not user or not pw:
-        raise RuntimeError("GMAIL_USER / GMAIL_APP_PASSWORD 환경변수가 없습니다(.env 또는 GitHub Secrets).")
+        raise RuntimeError("SMTP_USER / SMTP_PASS 환경변수가 없습니다(.env 또는 GitHub Secrets).")
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = user
