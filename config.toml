@@ -78,7 +78,7 @@ keywords = [
 ]
 # 키워드가 없어도 최고가 좌석이 이 가격 이상이면 대형 내한 공연으로 봅니다. 0이면 끔.
 min_top_price = 220000
-max_price = 50000
+max_price = 20000
 always_notify = false
 
 [popularity]
@@ -90,7 +90,9 @@ check_interval_hours = 6
 
 [watch]
 # 자동 대상 외에 직접 지정할 공연 (NOL 상품코드 = nol.yanolja.com/ticket/products/ 뒤의 숫자)
-# 예: extra_goods = ["26014812"]
-extra_goods = []
-# 직접 지정한 공연의 저가석 기준 가격
-extra_max_price = 30000
+# 직접 지정한 공연은 공연장·가격 조건과 상관없이 감시합니다.
+extra_goods = [
+  "26013242",   # 더 베스트 오브 라흐마니노프 (롯데콘서트홀 12/11)
+]
+# 직접 지정한 공연의 저가석 기준 가격. 0이면 그 공연의 '가장 싼 등급'만 감시합니다.
+extra_max_price = 0

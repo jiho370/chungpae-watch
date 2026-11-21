@@ -8,6 +8,8 @@
 예매·결제는 하지 않습니다. 알림만 보냅니다.
 """
 import argparse
+import hashlib
+import json
 import os
 import sys
 import time
@@ -120,15 +122,25 @@ class Run:
             self.consider(p)
         for code in cfg["watch"].get("extra_goods", []):
             code = str(code)
-            if code not in st["goods"] or not st["goods"][code].get("qualified"):
-                prod = self.product(code)
-                if prod:
-                    st["goods"][code] = {
-                        "title": prod["title"] or code, "venue": prod["venue"], "start": "", "end": "",
-                        "chungpae": code in cp_codes, "qualified": True, "tier": "직접 지정",
-                        "reason": "config의 extra_goods", "max_price": cfg["watch"]["extra_max_price"],
-                        "link": sources.nol_url(code), "first_seen": self.now,
-                    }
+            old = st["goods"].get(code) or {}
+            if old.get("tier") == "직접 지정":
+                continue
+            prod = self.product(code)
+            if not prod:
+                continue
+            cap = cfg["watch"].get("extra_max_price", 0)
+            label = f"{cap:,}원 이하"
+            if not cap:  # 0이면 그 공연의 가장 싼 등급만
+                prices = [x["price"] for x in filters.usable_grades(prod["grades"], cfg).values()]
+                cap = min(prices) if prices else 0
+                label = "가장 싼 등급"
+            st["goods"][code] = {
+                "title": old.get("title") or prod["title"] or code, "venue": old.get("venue") or prod["venue"],
+                "start": old.get("start", ""), "end": old.get("end", ""), "time": old.get("time", ""),
+                "chungpae": old.get("chungpae") or code in cp_codes, "qualified": True, "tier": "직접 지정",
+                "reason": f"config의 extra_goods, {label}", "max_price": cap,
+                "link": sources.nol_url(code), "first_seen": self.now,
+            }
         if cfg["popularity"].get("enabled"):
             self.popularity()
         st["last_lists"] = self.now
@@ -295,10 +307,12 @@ class Run:
             lines.append("  가격: " + ", ".join(f"{x['name']} {x['price']:,}" for x in gl))
         elif g.get("price_unknown"):
             lines.append("  가격: 확인 필요(페이지에서 가격을 읽지 못함)")
+        future_open = ""
         if prod.get("open_time") and prod["open_time"][:4] != "9999":
             try:
                 if self.now < kst_ts(prod["open_time"]) < self.now + 180 * 86400:  # 먼 미래 값은 '미정' 표시
-                    lines.append(f"  티켓 오픈: {prod['open_time'][:16]}")
+                    future_open = prod["open_time"][:16]
+                    lines.append(f"  티켓 오픈: {future_open}")
             except ValueError:
                 pass
         rows = self.status.get(code)
@@ -308,7 +322,9 @@ class Run:
                 if "presale" in r:
                     lines.append(f"    {fmt_date(r['date'], r['time'])}  판매 전 (오픈 {r['presale']})")
                 else:
-                    st = f"{r['cur']}석" if r["cur"] else "매진 → 취소표 감시 중"
+                    st = (f"{r['cur']}석" if r["cur"] else
+                          f"0석 (일반 오픈 {future_open} 전, 열리면 알림)" if future_open else
+                          "매진 → 취소표 감시 중")
                     lines.append(f"    {fmt_date(r['date'], r['time'])}  {r['grade']} {r['price']:,}원: {st}")
         lines.append(f"  예매(NOL): {g['link']}")
         if g.get("sp_link"):
@@ -363,18 +379,20 @@ class Run:
             return None
         return f"{pre} " + " / ".join(subj), "\n\n".join(parts) + "\n"
 
-    def baseline_mail(self):
+    def baseline_mail(self, rebaseline=False):
         st, pre = self.st, self.cfg["mail"]["subject_prefix"]
         codes = [c for c, g in st["goods"].items() if g.get("qualified")]
         codes.sort(key=lambda c: st["goods"][c].get("start", ""))
-        body = [f"감시를 시작합니다. 지금 조건에 맞는 공연은 {len(codes)}개입니다.",
+        head = "설정 변경을 반영했습니다" if rebaseline else "감시를 시작합니다"
+        body = [f"{head}. 지금 조건에 맞는 공연은 {len(codes)}개입니다.",
                 "앞으로는 새 공연·저가석 풀림·청패 등록이 생길 때만 메일이 옵니다.", ""]
         body += [self.describe(c, "대상") for c in codes]
         if self.err:
             body.append("■ 첫 실행 중 오류: " + "; ".join(f"{k}: {v}" for k, v in self.err.items()))
             for k, v in self.err.items():
                 st["errors"][k] = {"since": self.now, "msg": v}
-        return f"{pre} 감시 시작 — 대상 {len(codes)}개", "\n\n".join(body) + "\n"
+        title = "설정 변경 반영" if rebaseline else "감시 시작"
+        return f"{pre} {title} — 대상 {len(codes)}개", "\n\n".join(body) + "\n"
 
 
 def main():
@@ -401,6 +419,12 @@ def main():
     net.set_delay(cfg["schedule"]["request_delay_sec"])
     st = statemod.load(a.state)
     st.setdefault("goods", {})
+    # 선별 조건(filter/popularity/watch)이 바뀌면 대상을 처음부터 다시 판정하고 목록 메일을 한 번 보냄
+    cfg_hash = hashlib.sha1(json.dumps([cfg["filter"], cfg["popularity"], cfg["watch"]],
+                                       sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:12]
+    rebaseline = st["initialized"] and st.get("cfg_hash") != cfg_hash
+    if rebaseline:
+        st["goods"], st["initialized"] = {}, False
     run = Run(cfg, st, time.time())
 
     lists_due = run.business and \
@@ -413,8 +437,8 @@ def main():
         if not st["goods"]:
             print("첫 실행인데 공연을 하나도 못 읽었습니다:", run.err, file=sys.stderr)
             return 1
-        mail = run.baseline_mail()
-        st["initialized"] = True
+        mail = run.baseline_mail(rebaseline)
+        st["initialized"], st["cfg_hash"] = True, cfg_hash
     else:
         mail = run.compose()
 
