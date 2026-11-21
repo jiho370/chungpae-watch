@@ -215,7 +215,16 @@ def baggage_fee(itin: dict, cfg: dict) -> tuple[int, bool]:
     ext = " ".join(texts).lower()
     airlines = {f.get("airline", "") for f in itin.get("flights", []) or []}
 
-    trusted = set(bcfg.get("included_unless_flagged", []))
+    trusted = [t.lower() for t in bcfg.get("included_unless_flagged", [])]
+
+    def fee_for(airline: str) -> int | None:
+        """Google은 'Peach Aviation', 'ZIPAIR Tokyo'처럼 길게 보내므로 표의 이름이 포함되면 일치로 본다."""
+        name = airline.lower()
+        hits = [(len(k), v) for k, v in table.items() if k.lower() in name]
+        return max(hits)[1] if hits else None  # 가장 긴(구체적인) 이름 우선
+
+    def is_trusted(airline: str) -> bool:
+        return any(t in airline.lower() for t in trusted)
 
     # 1) 수하물 포함 표시
     if "checked bag" in ext and ("included" in ext or "free" in ext) and "fee" not in ext \
@@ -223,11 +232,11 @@ def baggage_fee(itin: dict, cfg: dict) -> tuple[int, bool]:
         return 0, False
     # 2) 유료 표시 → 항공사별 요금
     if "checked bag" in ext and ("fee" in ext or "not included" in ext):
-        fees = [table[a] for a in airlines if a in table]
+        fees = [f for a in airlines if (f := fee_for(a)) is not None]
         per_leg = max(fees) if fees else bcfg["default_fee_per_leg"]
         return per_leg * 2, True  # 왕복이므로 2회
     # 3) 표시 없음 → 해외 LCC만 요금 추가
-    foreign_fees = [table[a] for a in airlines if a in table and a not in trusted]
+    foreign_fees = [f for a in airlines if not is_trusted(a) and (f := fee_for(a)) is not None]
     if foreign_fees:
         return max(foreign_fees) * 2, True
     return 0, False

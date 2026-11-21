@@ -85,6 +85,9 @@ baggage:
     Scoot: 55000
     HK Express: 50000
     Jetstar: 50000
+    Tigerair: 45000
+    Thai Lion Air: 45000
+    Batik Air: 50000
 
 # ── Claude 설정 (메일 요약 작성용) ──
 claude:
