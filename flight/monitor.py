@@ -21,7 +21,9 @@ import smtplib
 import statistics
 import sys
 from datetime import date, datetime, timedelta, timezone
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from html import escape
 from pathlib import Path
 from urllib.parse import quote
 
@@ -456,7 +458,7 @@ def claude_summary(deals: list[dict], cfg: dict) -> str | None:
         return None
 
 
-def build_email(deals: list[dict], summary: str | None) -> tuple[str, str]:
+def build_email(deals: list[dict], summary: str | None) -> tuple[str, str, str]:
     hot = [d for d in deals if d["tier"] == "hot"]
     good = [d for d in deals if d["tier"] == "good"]
     parts = []
@@ -485,14 +487,162 @@ def build_email(deals: list[dict], summary: str | None) -> tuple[str, str]:
         body.append("")
     body.append("※ 수하물 요금 '(추정)'은 항공사별 대략적인 금액입니다. 예약 전 실제 요금을 확인하세요.")
     body.append("※ 경유 조건은 가는 편 기준으로 확인했습니다. 오는 편은 링크에서 확인하세요.")
-    return subject, "\n".join(body)
+    return subject, "\n".join(body), build_email_html(deals, summary)
 
 
-def send_email(subject: str, body: str) -> None:
+WEEKDAYS = "월화수목금토일"
+
+
+def _md(iso: str) -> str:
+    d = date.fromisoformat(iso)
+    return f"{d.month}/{d.day}({WEEKDAYS[d.weekday()]})"
+
+
+def _route_text(deal: dict) -> str:
+    if not deal["layovers"]:
+        return "직항"
+    parts = []
+    for l in deal["layovers"]:
+        m = l["minutes"] or 0
+        rest = f" {m % 60}분" if m % 60 else ""
+        parts.append(f"{l['airport']} {m // 60}시간{rest}")
+    return f"경유 {deal['stops']}회 · " + ", ".join(parts)
+
+
+def build_email_html(deals: list[dict], summary: str | None) -> str:
+    """Gmail에서 깨지지 않도록 표 + 인라인 스타일로만 만든 HTML 메일."""
+    font = "-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic',sans-serif"
+    ink, sub, line, bg = "#1f2328", "#6b7280", "#e5e7eb", "#f4f5f7"
+    tier_style = {
+        "hot": ("떨이", "#b42318", "#fef3f2"),
+        "good": ("괜찮음", "#175cd3", "#eff8ff"),
+    }
+
+    groups: dict[str, list[dict]] = {}
+    for d in sorted(deals, key=lambda d: (d["tier"] != "hot", d["total"])):
+        groups.setdefault(d["dest_code"], []).append(d)
+
+    def row(k: str, v: str) -> str:
+        return (f'<tr><td style="padding:3px 12px 3px 0;color:{sub};white-space:nowrap;vertical-align:top;">{k}</td>'
+                f'<td style="padding:3px 0;color:{ink};">{v}</td></tr>')
+
+    cards = []
+    for items in groups.values():
+        items.sort(key=lambda d: d["total"])
+        top = items[0]
+        label, color, tint = tier_style.get(top["tier"], tier_style["good"])
+        if top["discount"] is not None:
+            disc = f"평소보다 {top['discount'] * 100:.0f}% 저렴"
+        else:
+            disc = "Google 판정 '낮음'"
+        typical = top["typical_range"]
+        if typical and len(typical) >= 2:
+            typical_s = f"{won(typical[0])} ~ {won(typical[1])}"
+        else:
+            typical_s = "정보 없음"
+        if top.get("typical_source") == "평소 달력":
+            typical_s += " (달력 기준)"
+        if top["bag_fee"]:
+            est = " (추정)" if top["bag_estimated"] else ""
+            bag = f"운임 {won(top['fare'])} + 수하물 {won(top['bag_fee'])}{est}"
+        else:
+            bag = "수하물 포함 운임"
+
+        others = ""
+        if len(items) > 1:
+            rows = []
+            for d in sorted(items[1:], key=lambda d: d["nights"]):
+                dd = f"{d['discount'] * 100:.0f}%↓" if d["discount"] is not None else ""
+                rows.append(
+                    f'<tr><td style="padding:7px 0;border-top:1px solid {line};color:{ink};">'
+                    f'{_md(d["outbound"])} → {_md(d["return"])} · {d["nights"]}박</td>'
+                    f'<td style="padding:7px 0;border-top:1px solid {line};text-align:right;white-space:nowrap;">'
+                    f'<a href="{escape(d["link"])}" style="color:{ink};text-decoration:none;font-weight:600;">'
+                    f'{won(d["total"])}</a> <span style="color:{color};font-size:12px;">{dd}</span></td></tr>')
+            others = (f'<div style="margin-top:16px;font-size:12px;color:{sub};">다른 기간</div>'
+                      f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+                      f'style="font-size:13px;margin-top:4px;">{"".join(rows)}</table>')
+
+        cards.append(f"""
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0"
+       style="background:#ffffff;border:1px solid {line};border-radius:12px;margin:0 0 16px;">
+<tr><td style="padding:20px 22px;">
+  <span style="display:inline-block;padding:3px 9px;border-radius:999px;background:{tint};color:{color};font-size:12px;font-weight:700;">{label}</span>
+  <span style="font-size:12px;color:{sub};margin-left:6px;">{escape(top['country'])}</span>
+  <div style="font-size:20px;font-weight:700;color:{ink};margin:8px 0 2px;">{escape(top['dest_name'])} <span style="font-size:14px;color:{sub};font-weight:400;">{top['dest_code']}</span></div>
+  <div style="font-size:14px;color:{sub};">{top['origin']} 출발 · {_md(top['outbound'])} → {_md(top['return'])} · {top['nights']}박</div>
+  <div style="margin:14px 0 2px;"><span style="font-size:28px;font-weight:800;color:{ink};letter-spacing:-0.5px;">{won(top['total'])}</span><span style="font-size:13px;color:{sub};margin-left:6px;">수하물 포함</span></div>
+  <div style="font-size:14px;font-weight:700;color:{color};margin-bottom:12px;">{disc}</div>
+  <table role="presentation" cellpadding="0" cellspacing="0" style="font-size:13px;line-height:1.5;">
+    {row("평소", typical_s)}
+    {row("요금", bag)}
+    {row("항공사", escape(", ".join(top['airlines'])))}
+    {row("경로", escape(_route_text(top)))}
+  </table>
+  {others}
+  <table role="presentation" cellpadding="0" cellspacing="0" style="margin-top:18px;"><tr>
+    <td style="background:{ink};border-radius:8px;"><a href="{escape(top['link'])}" style="display:inline-block;padding:10px 18px;color:#ffffff;font-size:14px;font-weight:600;text-decoration:none;">Google Flights에서 보기</a></td>
+  </tr></table>
+</td></tr></table>""")
+
+    summary_html = ""
+    if summary:
+        paras = "".join(f'<p style="margin:0 0 6px;">{escape(x)}</p>' for x in summary.splitlines() if x.strip())
+        summary_html = (f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+                        f'style="margin:0 0 16px;"><tr><td style="padding:14px 18px 8px;background:#ffffff;'
+                        f'border-left:3px solid {ink};border-radius:8px;font-size:14px;line-height:1.6;'
+                        f'color:{ink};">{paras}</td></tr></table>')
+
+    hot_n = sum(1 for d in deals if d["tier"] == "hot")
+    head = f"오늘 찾은 항공권 {len(groups)}곳" + (f" · 떨이 {hot_n}건" if hot_n else "")
+    return f"""<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:{bg};">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:{bg};">
+<tr><td align="center" style="padding:24px 12px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;font-family:{font};">
+<tr><td style="padding:0 4px 14px;">
+  <div style="font-size:12px;color:{sub};">떨이 항공권 · 인천/김포 출발</div>
+  <div style="font-size:22px;font-weight:800;color:{ink};margin-top:2px;">{head}</div>
+</td></tr>
+<tr><td>{summary_html}{"".join(cards)}</td></tr>
+<tr><td style="padding:4px 4px 0;font-size:12px;line-height:1.6;color:{sub};">
+  수하물 '(추정)'은 항공사별 대략적인 금액이라 예약 전 실제 요금을 확인하세요.<br>
+  경유 조건(6시간 이하 또는 24시간 이상)은 가는 편만 확인했습니다.
+</td></tr>
+</table></td></tr></table></body></html>"""
+
+
+SAMPLE_DEALS = [
+    {"tier": "hot", "dest_code": "KIX", "dest_name": "Osaka", "country": "Japan", "origin": "ICN",
+     "outbound": "2027-04-29", "return": "2027-05-03", "nights": 4, "fare": 200777, "bag_fee": 0,
+     "bag_estimated": False, "total": 200777, "discount": 0.21, "typical_range": [255000, 400000],
+     "typical_source": "Google", "price_level": "low", "airlines": ["Jeju Air"], "stops": 0, "layovers": [],
+     "link": "https://www.google.com/travel/flights?q=Flights%20to%20KIX%20from%20ICN%20on%202027-04-29%20through%202027-05-03"},
+    {"tier": "good", "dest_code": "KIX", "dest_name": "Osaka", "country": "Japan", "origin": "ICN",
+     "outbound": "2027-04-29", "return": "2027-05-05", "nights": 6, "fare": 180000, "bag_fee": 90000,
+     "bag_estimated": True, "total": 270000, "discount": 0.12, "typical_range": [300000, 450000],
+     "typical_source": "Google", "price_level": "low", "airlines": ["Peach Aviation"], "stops": 0, "layovers": [],
+     "link": "https://www.google.com/travel/flights?q=Flights%20to%20KIX%20from%20ICN%20on%202027-04-29%20through%202027-05-05"},
+    {"tier": "good", "dest_code": "HIJ", "dest_name": "Hiroshima", "country": "Japan", "origin": "ICN",
+     "outbound": "2027-01-28", "return": "2027-02-01", "nights": 4, "fare": 226700, "bag_fee": 0,
+     "bag_estimated": False, "total": 226700, "discount": 0.14, "typical_range": [265000, 475000],
+     "typical_source": "Google", "price_level": "low", "airlines": ["Jeju Air"], "stops": 1,
+     "layovers": [{"airport": "Fukuoka Airport", "minutes": 135, "overnight": False}],
+     "link": "https://www.google.com/travel/flights?q=Flights%20to%20HIJ%20from%20ICN%20on%202027-01-28%20through%202027-02-01"},
+]
+
+
+def send_email(subject: str, body: str, html: str | None = None) -> None:
     user = os.environ["GMAIL_USER"]
     password = os.environ["GMAIL_APP_PASSWORD"]
     to = os.environ.get("MAIL_TO") or user
-    msg = MIMEText(body, "plain", "utf-8")
+    if html:
+        msg = MIMEMultipart("alternative")
+        msg.attach(MIMEText(body, "plain", "utf-8"))
+        msg.attach(MIMEText(html, "html", "utf-8"))
+    else:
+        msg = MIMEText(body, "plain", "utf-8")
     msg["Subject"] = subject
     msg["From"] = user
     msg["To"] = to
@@ -531,7 +681,8 @@ def main() -> int:
         return 0
 
     if args.test_email:
-        send_email("[떨이 항공권] 테스트 메일", "메일 설정이 정상입니다. 떨이가 뜨면 이 주소로 알려드릴게요.")
+        _, body, html = build_email(SAMPLE_DEALS, "테스트 메일입니다. 아래는 견본 데이터로 만든 레이아웃이에요.")
+        send_email("[떨이 항공권] 테스트 메일 (견본)", body, html)
         print("테스트 메일을 보냈습니다.")
         return 0
 
@@ -605,11 +756,11 @@ def main() -> int:
 
     if deals:
         deals.sort(key=lambda d: (d["tier"] != "hot", d["total"]))
-        subject, body = build_email(deals, claude_summary(deals, cfg))
+        subject, body, html = build_email(deals, claude_summary(deals, cfg))
         if args.dry_run:
             print(f"\n제목: {subject}\n\n{body}")
         else:
-            send_email(subject, body)
+            send_email(subject, body, html)
             for d in deals:
                 remember_alert(d, alerts, today)
             print(f"메일 발송: {subject}")
