@@ -4,9 +4,16 @@ on:
   schedule:
     - cron: "7 0 * * *"   # 매일 09:07 KST (UTC 00:07). 실제 실행은 몇 분~수십 분 늦어질 수 있음
   workflow_dispatch:       # Actions 탭에서 수동 실행 버튼
+    inputs:
+      mode:
+        description: "실행 모드"
+        type: choice
+        default: run
+        options: [run, test-claude, test-email]
 
 permissions:
   contents: write          # flight/data/ 기록을 커밋하기 위해 필요
+  id-token: write          # Claude API 페더레이션 인증용 OIDC 토큰 발급
 
 concurrency:
   group: flight-deal-watcher
@@ -19,6 +26,12 @@ jobs:
     defaults:
       run:
         working-directory: flight
+    env:
+      # Claude API: API 키 대신 워크로드 ID 페더레이션 (Console 규칙 chungpae-watch-flight)
+      # 이 ID들은 비밀값이 아님. 규칙이 이 저장소의 main 브랜치로 고정돼 있어 다른 곳에서는 쓸 수 없음
+      ANTHROPIC_FEDERATION_RULE_ID: fdrl_015Mb73brcpUgZZXTRAk4mZT
+      ANTHROPIC_ORGANIZATION_ID: 4e79a408-c817-44a8-9459-6983d862d88e
+      ANTHROPIC_IDENTITY_TOKEN_FILE: ${{ github.workspace }}/../gha-oidc-token
     steps:
       - uses: actions/checkout@v4
 
@@ -33,14 +46,20 @@ jobs:
       - name: Run monitor
         env:
           SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           # 공연 감시용으로 등록해 둔 메일 Secret을 그대로 사용
           GMAIL_USER: ${{ secrets.SMTP_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.SMTP_PASS }}
           MAIL_TO: ${{ secrets.EMAIL_TO }}
-        run: python monitor.py
+          MODE: ${{ inputs.mode || 'run' }}
+        run: |
+          case "$MODE" in
+            test-claude) python monitor.py --test-claude ;;
+            test-email)  python monitor.py --test-email ;;
+            *)           python monitor.py ;;
+          esac
 
       - name: Commit price history
+        if: ${{ (inputs.mode || 'run') == 'run' }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

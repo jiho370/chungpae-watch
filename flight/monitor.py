@@ -9,6 +9,7 @@
     python monitor.py              # 실제 실행
     python monitor.py --dry-run    # 메일 안 보내고 결과만 출력, 기록도 저장 안 함
     python monitor.py --test-email # 메일 설정 확인용 테스트 메일 발송
+    python monitor.py --test-claude # Claude API 인증(페더레이션) 확인
 """
 
 from __future__ import annotations
@@ -340,12 +341,35 @@ SUMMARY_SYSTEM = (
 )
 
 
+def refresh_github_oidc_token() -> None:
+    """GitHub Actions에서 페더레이션용 OIDC 토큰을 받아 파일에 쓴다.
+
+    GitHub 토큰은 약 5분 뒤 만료되므로 Claude를 부르기 직전에 받는다.
+    Anthropic SDK가 ANTHROPIC_IDENTITY_TOKEN_FILE을 읽어 단기 접근 토큰으로 교환한다.
+    """
+    url = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL")
+    req_token = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
+    token_file = os.environ.get("ANTHROPIC_IDENTITY_TOKEN_FILE")
+    if not (url and req_token and token_file):
+        return
+    resp = requests.get(
+        url,
+        params={"audience": "https://api.anthropic.com"},
+        headers={"Authorization": f"Bearer {req_token}"},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    Path(token_file).write_text(resp.json()["value"], encoding="utf-8")
+
+
 def claude_summary(deals: list[dict], cfg: dict) -> str | None:
-    if not cfg["claude"].get("enabled") or not os.environ.get("ANTHROPIC_API_KEY"):
+    has_credential = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_FEDERATION_RULE_ID")
+    if not cfg["claude"].get("enabled") or not has_credential:
         return None
     try:
         import anthropic
 
+        refresh_github_oidc_token()
         client = anthropic.Anthropic()
         slim = [{k: d[k] for k in ("tier", "dest_name", "country", "outbound", "return", "nights", "total",
                                    "fare", "bag_fee", "bag_estimated", "discount", "typical_range",
@@ -420,7 +444,23 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--test-email", action="store_true")
+    parser.add_argument("--test-claude", action="store_true")
     args = parser.parse_args()
+
+    if args.test_claude:
+        cfg = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
+        import anthropic
+
+        refresh_github_oidc_token()
+        response = anthropic.Anthropic().messages.create(
+            model=cfg["claude"]["model"],
+            max_tokens=200,
+            output_config={"effort": "low"},
+            messages=[{"role": "user", "content": "연결 테스트입니다. '연결 성공'이라고만 답하세요."}],
+        )
+        text = "".join(b.text for b in response.content if b.type == "text")
+        print(f"Claude 응답: {text} (stop_reason={response.stop_reason})")
+        return 0
 
     if args.test_email:
         send_email("[떨이 항공권] 테스트 메일", "메일 설정이 정상입니다. 떨이가 뜨면 이 주소로 알려드릴게요.")

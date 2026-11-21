@@ -42,16 +42,16 @@ Gmail 앱 비밀번호는 평소 로그인 비밀번호가 아니라 이 용도�
 | `SMTP_PASS` | Gmail 앱 비밀번호 (이미 있음) |
 | `EMAIL_TO` | 받을 주소 (이미 있음) |
 | `SERPAPI_KEY` | **새로 등록** |
-| `ANTHROPIC_API_KEY` | **새로 등록** |
 
 ```powershell
 gh secret set SERPAPI_KEY -R jiho370/chungpae-watch
-gh secret set ANTHROPIC_API_KEY -R jiho370/chungpae-watch
 ```
+
+Claude API는 키 대신 **워크로드 ID 페더레이션**으로 인증합니다. Console의 규칙 `chungpae-watch-flight`가 이 저장소의 main 브랜치에서 돈 워크플로만 허용하고, 규칙 ID와 조직 ID는 `flight.yml`에 적혀 있습니다(비밀값 아님). `ANTHROPIC_API_KEY` Secret은 필요 없습니다.
 
 ### 4. 첫 실행
 
-저장소 → **Actions** 탭 → `flight-deal-watcher` → **Run workflow**. 초록색으로 끝나고 `flight/data/` 폴더에 커밋이 생기면 성공입니다.
+저장소 → **Actions** 탭 → `flight-deal-watcher` → **Run workflow**. 실행 모드에서 `test-claude`(Claude 인증 확인), `test-email`(메일 확인), `run`(실제 감시)을 고를 수 있어요. 초록색으로 끝나고 `flight/data/` 폴더에 커밋이 생기면 성공입니다.
 
 커밋 단계에서 권한 오류가 나면 **Settings → Actions → General → Workflow permissions**를 "Read and write permissions"로 바꿔주세요.
 
