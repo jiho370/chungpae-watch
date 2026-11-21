@@ -33,6 +33,7 @@ DATA = ROOT / "data"
 HISTORY_FILE = DATA / "history.json"
 ALERTS_FILE = DATA / "alerts.json"
 USAGE_FILE = DATA / "usage.json"
+BASELINE_FILE = DATA / "baseline.json"
 
 KST = timezone(timedelta(hours=9))
 SERPAPI_URL = "https://serpapi.com/search.json"
@@ -157,9 +158,33 @@ def run_explore(serp: Serp, cfg: dict, history: dict, today: date) -> None:
             entry["prices"] = entry["prices"][-200:]
 
 
-def pick_candidates(cfg: dict, history: dict, today: date) -> list[dict]:
-    """오늘 가격이 그동안 기록의 중앙값보다 충분히 싼 도착지를 고른다."""
+def baseline_ref(baseline: dict, code: str, start_iso: str) -> dict | None:
+    """미리 모아 둔 평소 가격(Google Flights 달력)에서 도착지·출발 월의 기준값을 찾는다."""
+    cities = baseline.get("cities", {})
+    city = cities.get(code) or cities.get(baseline.get("aliases", {}).get(code, ""))
+    if not city:
+        return None
+    month = city["months"].get(start_iso[:7])
+    if month and month["days"] >= 10:
+        return {"min": month["min"], "p25": month["p25"], "scope": start_iso[:7]}
+    # 그 달 자료가 없으면 월별 값들의 중앙값으로 대신한다
+    solid = [m for m in city["months"].values() if m["days"] >= 10] or list(city["months"].values())
+    return {
+        "min": int(statistics.median(m["min"] for m in solid)),
+        "p25": int(statistics.median(m["p25"] for m in solid)),
+        "scope": "월 자료 없음",
+    }
+
+
+def pick_candidates(cfg: dict, history: dict, today: date, baseline: dict | None = None) -> list[dict]:
+    """오늘 가격이 평소보다 충분히 싼 도착지를 고른다.
+
+    자체 기록이 min_history_points일 이상 쌓인 도착지는 기록 중앙값과,
+    아직 기록이 적은 도착지는 미리 모아 둔 평소 가격(baseline.json)과 비교한다.
+    """
     ccfg = cfg["candidate"]
+    base_drop = ccfg.get("baseline_drop_ratio", 0.05)
+    baseline = baseline or {}
     today_s = today.isoformat()
     cooldown = timedelta(days=cfg["recheck_cooldown_days"])
     out = []
@@ -173,11 +198,20 @@ def pick_candidates(cfg: dict, history: dict, today: date) -> list[dict]:
         for p in entry["prices"]:
             if p["d"] != today_s:
                 daily[p["d"]] = min(daily.get(p["d"], p["p"]), p["p"])
-        if len(daily) < ccfg["min_history_points"]:
+        ref = baseline_ref(baseline, code, best_today["start"])
+        if len(daily) >= ccfg["min_history_points"]:
+            median = statistics.median(daily.values())
+            need, source = ccfg["min_drop_ratio"], "기록"
+        elif ref:
+            # Explore 가격은 여러 날짜 중 최저가라, 달력에서도 그 달의 최저가와 비교해야 공정하다.
+            median = ref["min"]
+            # 그 달 자료가 없어 다른 달 값으로 대신할 때는 더 크게 떨어져야 후보로 본다
+            need = base_drop if ref["scope"] != "월 자료 없음" else ccfg.get("baseline_fallback_drop_ratio", 0.20)
+            source = f"평소 달력 월 최저가({ref['scope']})"
+        else:
             continue
-        median = statistics.median(daily.values())
         drop = (median - best_today["p"]) / median
-        if drop < ccfg["min_drop_ratio"]:
+        if drop < need:
             continue
         last = entry.get("last_checked")
         if last and today - date.fromisoformat(last) < cooldown:
@@ -185,7 +219,8 @@ def pick_candidates(cfg: dict, history: dict, today: date) -> list[dict]:
         out.append({
             "code": code, "name": entry.get("name", code), "country": entry.get("country", ""),
             "explore_price": best_today["p"], "median": int(median), "drop": drop,
-            "start": best_today["start"],
+            "start": best_today["start"], "ref_source": source,
+            "baseline_p25": ref["p25"] if ref else None,
         })
     out.sort(key=lambda c: c["drop"], reverse=True)
     return out[: cfg["max_candidates_per_run"]]
@@ -264,6 +299,10 @@ def check_candidate(serp: Serp, cfg: dict, cand: dict) -> list[dict]:
         insights = data.get("price_insights", {}) or {}
         typical = insights.get("typical_price_range") or []
         typical_low = to_price(typical[0]) if typical else None
+        typical_source = "Google"
+        if not typical_low and cand.get("baseline_p25"):
+            # Google이 평소 가격대를 안 주면 미리 모아 둔 달력 가격의 하위 25%로 대신 비교
+            typical_low, typical_source = cand["baseline_p25"], "평소 달력"
 
         best = None
         for itin in (data.get("best_flights") or []) + (data.get("other_flights") or []):
@@ -295,7 +334,7 @@ def check_candidate(serp: Serp, cfg: dict, cand: dict) -> list[dict]:
             "outbound": start.isoformat(), "return": ret.isoformat(), "nights": n,
             "price_level": insights.get("price_level"),
             "typical_range": [to_price(x) for x in typical] if typical else None,
-            "discount": discount,
+            "discount": discount, "typical_source": typical_source if typical_low else None,
             "link": flights_link(best["origin"], cand["code"], start.isoformat(), ret.isoformat()),
         })
         results.append(best)
@@ -545,8 +584,10 @@ def main() -> int:
     deals: list[dict] = []
     try:
         run_explore(serp, cfg, history, today)
-        candidates = pick_candidates(cfg, history, today)
-        print(f"후보 {len(candidates)}개: {[c['code'] for c in candidates]}")
+        candidates = pick_candidates(cfg, history, today, load_json(BASELINE_FILE, {}))
+        print(f"후보 {len(candidates)}개: " + ", ".join(
+            f"{c['code']} {won(c['explore_price'])} (기준 {won(c['median'])}, {c['ref_source']}, -{c['drop'] * 100:.0f}%)"
+            for c in candidates))
         for cand in candidates:
             if serp.remaining() < len(cfg["trip_lengths_days"]):
                 print("남은 검색 횟수가 부족해 정밀 검사를 건너뜁니다.")

@@ -34,6 +34,9 @@ exclude_date_ranges: []
 candidate:
   min_history_points: 3     # 최소 며칠치 기록이 쌓여야 비교 시작
   min_drop_ratio: 0.10      # 기록 중앙값보다 10% 이상 싸면 후보
+  # 기록이 아직 적은 도착지는 data/baseline.json(Google Flights 달력에서 미리 모은 평소 가격)과 비교
+  baseline_drop_ratio: 0.05 # 그 달 달력 최저가보다도 5% 이상 싸면 후보
+  baseline_fallback_drop_ratio: 0.20 # 그 달 자료가 없으면(다른 달 값으로 대신) 20% 이상
 
 # ── 2단계 떨이 판정 기준 (수하물 포함 가격 기준) ──
 deal:
