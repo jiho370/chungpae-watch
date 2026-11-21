@@ -102,7 +102,14 @@ class Serp:
         resp = requests.get(SERPAPI_URL, params=query, timeout=60)
         data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
         if resp.status_code != 200 or "error" in data:
-            raise RuntimeError(f"SerpApi 오류 ({resp.status_code}): {data.get('error', resp.text[:200])}")
+            hint = ""
+            if resp.status_code == 401:
+                # 키 값은 출력하지 않고 길이·형식만 알려준다 (정상 키는 64자리 소문자 16진수)
+                k = self.api_key
+                is_hex64 = len(k) == 64 and all(c in "0123456789abcdef" for c in k)
+                hint = (f" [키 진단: 길이 {len(k)}자, 64자리 16진수 형식={'예' if is_hex64 else '아니오'}, "
+                        f"Anthropic 키 형식(sk-ant)={'예' if k.startswith('sk-ant') else '아니오'}]")
+            raise RuntimeError(f"SerpApi 오류 ({resp.status_code}): {data.get('error', resp.text[:200])}{hint}")
         self.usage["count"] += 1
         return data
 
