@@ -120,13 +120,24 @@ def run_explore(serp: Serp, cfg: dict, history: dict, today: date) -> None:
     """도착지별 오늘의 최저가를 기록한다."""
     dests = history.setdefault("destinations", {})
     today_s = today.isoformat()
+    departures = cfg.get("explore_departures") or [cfg["origins"]]
     for duration in cfg["explore_durations"]:
-        data = serp.search({
-            "engine": "google_travel_explore",
-            "departure_id": cfg["origins"],
-            "travel_duration": duration,
-            "month": 0,
-        })
+        data = {}
+        for dep in departures:  # 앞에서부터 시도해서 결과가 나오는 첫 출발지를 쓴다
+            try:
+                data = serp.search({
+                    "engine": "google_travel_explore",
+                    "departure_id": dep,
+                    "travel_duration": duration,
+                    "month": 0,
+                })
+            except RuntimeError as exc:
+                if "Empty results" in str(exc):
+                    print(f"Explore 결과 없음 (출발지 {dep}, 기간 {duration}) → 다음 후보로")
+                    continue
+                raise
+            print(f"Explore 출발지 {dep}, 기간 {duration}: 도착지 {len(data.get('destinations', []))}곳")
+            break
         for item in data.get("destinations", []):
             code = (item.get("destination_airport") or {}).get("code")
             price = to_price(item.get("flight_price"))

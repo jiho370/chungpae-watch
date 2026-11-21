@@ -5,6 +5,10 @@
 # 출발 공항 (쉼표로 여러 개)
 origins: "ICN,GMP"
 
+# 1단계 Explore의 출발지. 공항 여러 개를 쉼표로 묶으면 결과가 비어서,
+# 서울 도시 ID(인천+김포 포함)를 먼저 시도하고 안 되면 ICN, GMP 순으로 시도
+explore_departures: ["/m/0hsqf", "ICN", "GMP"]
+
 # 1단계 Explore에서 볼 여행 기간 (Google이 지원하는 값만 가능)
 #   1 = 주말, 2 = 1주, 3 = 2주
 explore_durations: [1, 2]
