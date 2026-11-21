@@ -140,8 +140,7 @@ class Run:
                 "reason": f"config의 extra_goods, {label}", "max_price": cap, "cheapest_only": cheapest,
                 "link": sources.nol_url(code), "first_seen": self.now,
             }
-        if cfg["popularity"].get("enabled"):
-            self.popularity()
+        self.popularity()  # 찜 수 갱신 + 보류 공연 재확인 + 유명 공연 추가
         st["last_lists"] = self.now
 
     def consider(self, p: dict):
@@ -191,6 +190,16 @@ class Run:
             g.update(tier=tier["name"], reason=reason, max_price=tier["max_price"],
                      cheapest_only=cheapest, price_unknown=price_unknown)
             g["qualified"] = bool(cheap) or tier.get("always_notify", False) or price_unknown
+            need = tier.get("min_pinned", 0)
+            if g["qualified"] and need:
+                n = self.guard("NOL 찜 수", sources.nol_pinned, code)
+                if n is not None:
+                    g["pinned"], g["pinned_at"] = n, self.now
+                if (n or 0) < need:
+                    # 찜이 모자라면 보류: popularity()가 주기적으로 다시 보고 기준을 넘으면 알림
+                    g["qualified"], g["pending_tier"] = False, tier["name"]
+                else:
+                    g["reason"] += f", 찜 {n}명"
         st["goods"][code] = g
         if g["qualified"] and st["initialized"]:
             self.new.append(code)
@@ -210,7 +219,16 @@ class Run:
             if n is None:
                 continue
             g["pinned_at"], g["pinned"] = self.now, n
-            if g.get("qualified") or n < pc["pinned_threshold"]:
+            if g.get("qualified"):
+                continue
+            pend = filters.tier_by_name(cfg, g.get("pending_tier", ""))
+            if pend and n >= pend.get("min_pinned", 0):
+                g.update(qualified=True, reason=g.get("reason", "") + f", 찜 {n}명")
+                g.pop("pending_tier", None)
+                if st["initialized"]:
+                    self.new.append(code)
+                continue
+            if not pc.get("enabled") or n < pc["pinned_threshold"]:
                 continue
             prod = self.product(code)
             if prod and filters.cheap_grades(prod["grades"], tier["max_price"], cfg, cheapest):
