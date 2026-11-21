@@ -1,0 +1,88 @@
+# ─────────────────────────────────────────────
+# 떨이 항공권 감시 설정
+# ─────────────────────────────────────────────
+
+# 출발 공항 (쉼표로 여러 개)
+origins: "ICN,GMP"
+
+# 1단계 Explore에서 볼 여행 기간 (Google이 지원하는 값만 가능)
+#   1 = 주말, 2 = 1주, 3 = 2주
+explore_durations: [1, 2]
+
+# 2단계 정밀 검사에서 확인할 여행 기간 (일 단위, 출발일 기준 귀국일 = 출발일 + N)
+# 후보 1개당 이 목록 길이만큼 검색이 소모됩니다.
+trip_lengths_days: [3, 4, 5, 6, 8]
+
+# 하루에 정밀 검사할 후보 도착지 수
+max_candidates_per_run: 1
+
+# 같은 도착지를 다시 정밀 검사하기까지 기다릴 일수
+recheck_cooldown_days: 3
+
+# SerpApi 월 사용 한도 (무료 250회 중 여유분을 남겨둠)
+monthly_search_limit: 240
+
+# 이 날짜 사이에 출발하는 일정은 제외 (예: 시험 기간). 없으면 빈 목록.
+exclude_date_ranges: []
+#  - ["2026-12-08", "2026-12-19"]
+
+# ── 1단계 후보 선정 기준 ──
+candidate:
+  min_history_points: 3     # 최소 며칠치 기록이 쌓여야 비교 시작
+  min_drop_ratio: 0.10      # 기록 중앙값보다 10% 이상 싸면 후보
+
+# ── 2단계 떨이 판정 기준 (수하물 포함 가격 기준) ──
+deal:
+  hot_ratio: 0.25           # 평소 가격대 하한보다 25% 이상 싸면 🔥
+  good_ratio: 0.10          # 10% 이상 싸면 👀
+  realert_drop_ratio: 0.03  # 이미 알린 일정은 3% 이상 더 내려야 다시 알림
+
+# ── 경유 조건 ──
+# 각 경유 체류 시간이 short_max 이하이거나 long_min 이상이어야 통과 (분 단위)
+layover:
+  short_max_minutes: 360    # 6시간 이하
+  long_min_minutes: 1440    # 24시간 이상
+
+# ── 위탁수하물 요금 추정 (원, 편도 1회 기준) ──
+# 판정 순서:
+#   1) Google 결과에 수하물 포함 표시가 있으면 → 0원
+#   2) "Checked baggage for a fee" 표시가 있으면 → 아래 항공사별 요금(없으면 기본값)을 편도마다 더함
+#   3) 표시가 없으면 → 해외 LCC(아래 표에 있고 included_unless_flagged에 없는 항공사)만 요금을 더하고,
+#      국내 LCC·대형 항공사는 포함으로 간주
+# 금액은 정확한 값이 아니라 추정치입니다.
+baggage:
+  default_fee_per_leg: 45000
+  # 표시가 없으면 수하물 포함으로 보는 항공사 (국내 LCC 등)
+  included_unless_flagged:
+    - Jeju Air
+    - Jin Air
+    - T'way Air
+    - Air Busan
+    - Air Seoul
+    - Eastar Jet
+    - Aero K
+    - Air Premia
+  airline_fee_per_leg:
+    Jeju Air: 45000
+    Jin Air: 45000
+    T'way Air: 45000
+    Air Busan: 40000
+    Air Seoul: 40000
+    Eastar Jet: 45000
+    Aero K: 40000
+    Air Premia: 60000
+    Peach: 45000
+    Zipair: 60000
+    Spring Airlines: 40000
+    AirAsia: 50000
+    AirAsia X: 60000
+    VietJet: 45000
+    Cebu Pacific: 45000
+    Scoot: 55000
+    HK Express: 50000
+    Jetstar: 50000
+
+# ── Claude 설정 (메일 요약 작성용) ──
+claude:
+  model: claude-haiku-5-5
+  enabled: true
