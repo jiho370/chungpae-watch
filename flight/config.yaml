@@ -28,7 +28,7 @@ explore_regions:
 # 수하물 포함 가격 상한. 평소보다 싸져도 이 금액을 넘으면 알리지 않는다.
 # countries는 Google 결과의 영문 국가명. 어느 그룹에도 없으면 default.
 price_caps:
-  default: 1000000          # 아래 어디에도 없는 나라(동남아·남아시아·태평양 섬 등) 100만 원
+  default: 1000000          # 아래 어디에도 없는 나라(팔라우·중남미 등) 100만 원
   groups:
     - name: 일본·중국
       max_total: 200000
@@ -44,17 +44,29 @@ price_caps:
     - name: 호주
       max_total: 600000
       countries: [Australia, New Zealand]
-    - name: 유럽·아프리카
-      max_total: 800000
+    - name: 유럽
+      max_total: 700000
       countries: [France, United Kingdom, Italy, Spain, Portugal, Germany, Netherlands, Belgium,
                   Luxembourg, Switzerland, Austria, Czechia, Czech Republic, Poland, Hungary,
                   Slovakia, Slovenia, Croatia, Serbia, Bosnia and Herzegovina, Montenegro,
                   Albania, North Macedonia, Greece, Cyprus, Malta, Bulgaria, Romania, Moldova,
                   Ukraine, Belarus, Lithuania, Latvia, Estonia, Finland, Sweden, Norway, Denmark,
-                  Iceland, Ireland, Turkey, Türkiye, Russia,
-                  Egypt, Morocco, Tunisia, Algeria, South Africa, Kenya, Tanzania, Ethiopia,
+                  Iceland, Ireland, Turkey, Türkiye, Russia]
+    - name: 아프리카
+      max_total: 800000
+      countries: [Egypt, Morocco, Tunisia, Algeria, South Africa, Kenya, Tanzania, Ethiopia,
                   Mauritius, Seychelles, Madagascar, Nigeria, Ghana, Senegal, Rwanda, Uganda,
                   Namibia, Botswana, Zimbabwe, Zambia]
+    - name: 동남아
+      max_total: 300000
+      countries: [Thailand, Vietnam, Philippines, Singapore, Malaysia, Indonesia, Cambodia, Laos,
+                  Myanmar, Myanmar (Burma), Brunei, Timor-Leste]
+    - name: 남아시아
+      max_total: 500000
+      countries: [India, Nepal, Sri Lanka, Bangladesh, Pakistan, Maldives, Bhutan]
+    - name: 괌·사이판
+      max_total: 250000
+      countries: [Guam, Northern Mariana Islands]
     - name: 미국·캐나다
       max_total: 1000000
       countries: [United States, Canada]
