@@ -472,7 +472,7 @@ def main() -> int:
     alerts = load_json(ALERTS_FILE, {})
     usage = load_json(USAGE_FILE, {})
     today = today_kst()
-    serp = Serp(os.environ["SERPAPI_KEY"], cfg["monthly_search_limit"], usage)
+    serp = Serp(os.environ["SERPAPI_KEY"].strip(), cfg["monthly_search_limit"], usage)
 
     deals: list[dict] = []
     try:
