@@ -195,6 +195,17 @@ def run_explore(serp: Serp, cfg: dict, history: dict, today: date) -> None:
     history["region_explore_last"] = today.isoformat()
 
 
+def explore_reserve(cfg: dict, today: date) -> int:
+    """이번 달 남은 날(내일부터 말일까지) 매일 Explore에 쓸 검색 횟수."""
+    rcfg = cfg.get("explore_regions") or {}
+    per_run = len(cfg["explore_durations"])
+    if rcfg.get("areas"):
+        per_run += len(rcfg["areas"]) * len(rcfg.get("durations", [2])) / max(rcfg.get("every_days", 1), 1)
+    next_month = (today.replace(day=28) + timedelta(days=4)).replace(day=1)
+    days_left = (next_month - today).days - 1
+    return int(per_run * days_left + 0.999)
+
+
 def price_cap(cfg: dict, country: str) -> int | None:
     """도착 국가에 맞는 수하물 포함 가격 상한. 이보다 비싸면 싸져도 알리지 않는다."""
     caps = cfg.get("price_caps") or {}
@@ -797,10 +808,21 @@ def main() -> int:
         print(f"후보 {len(candidates)}개: " + ", ".join(
             f"{c['code']} {won(c['explore_price'])} (기준 {won(c['median'])}, {c['ref_source']}, -{c['drop'] * 100:.0f}%)"
             for c in candidates))
+        # 정밀 검사 몫: Explore용을 월말까지 떼어 두고 남는 횟수를 남은 날수로 나눠 매일 적립한다
+        per_check = len(cfg["trip_lengths_days"])
+        reserve = explore_reserve(cfg, today)
+        next_month = (today.replace(day=28) + timedelta(days=4)).replace(day=1)
+        surplus = max(serp.remaining() - reserve, 0)
+        if usage.get("credit_day") != today.isoformat():
+            usage["credit"] = usage.get("credit", 0) + surplus / max((next_month - today).days, 1)
+            usage["credit_day"] = today.isoformat()
+        usage["credit"] = min(usage.get("credit", 0), surplus)
+        print(f"정밀 검사 적립 {usage['credit']:.1f}회 (검사 1번에 {per_check}회, 월말까지 Explore용 {reserve}회 예약)")
         for cand in candidates:
-            if serp.remaining() < len(cfg["trip_lengths_days"]):
-                print("남은 검색 횟수가 부족해 정밀 검사를 건너뜁니다.")
+            if usage["credit"] < per_check:
+                print("적립분이 부족해 오늘 정밀 검사는 건너뜁니다.")
                 break
+            usage["credit"] -= per_check
             history["destinations"][cand["code"]]["last_checked"] = today.isoformat()
             for deal in check_candidate(serp, cfg, cand):
                 tier = classify(deal, cfg)
