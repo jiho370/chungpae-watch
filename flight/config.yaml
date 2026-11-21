@@ -14,13 +14,14 @@ explore_departures: ["/m/0hsqf", "ICN", "GMP"]
 explore_durations: [1, 2]
 
 # 장거리(유럽·북미·오세아니아)는 기본 Explore에 안 나와서 도착 지역을 지정해 따로 훑는다.
-# 지역당 검색 1회 × every_days일에 한 번 (3곳이면 월 30회쯤)
+# 지역당 검색 1회 × every_days일에 한 번 (4곳이면 월 40회쯤)
 explore_regions:
   every_days: 3
   durations: [2]            # 2 = 1주
   areas:
     - {name: 유럽, id: "/m/02j9z"}
-    - {name: 북미, id: "/m/059g4"}
+    - {name: 미국, id: "/m/09c7w0"}
+    - {name: 캐나다, id: "/m/0d060g"}
     - {name: 오세아니아, id: "/m/05nrg"}
 
 # 수하물 포함 가격 상한. 평소보다 싸져도 이 금액을 넘으면 알리지 않는다.
