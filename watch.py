@@ -243,9 +243,17 @@ class Run:
         sc = cfg["schedule"]
         last_check, plenty_map = st.setdefault("last_check", {}), st.setdefault("plenty", {})
         so_min = soldout_interval(self.dt, sc)
+        fc = cfg.get("focus", {})
+        focus_on = bool(fc.get("until")) and self.today <= fc["until"]
         for code, g in list(st["goods"].items()):
             if not g.get("qualified") or (g.get("end") and g["end"] < self.today):
                 continue
+            if focus_on:
+                # 기간 한정: 지정한 공연만 취소표 확인
+                title, tier = g.get("title", ""), g.get("tier", "")
+                if not (any(k in title for k in fc.get("keywords", []))
+                        or any(tier.startswith(t) for t in fc.get("tiers", []))):
+                    continue
             if st["initialized"] and code not in self.new and code in last_check:  # 첫 판정 때는 전부 확인
                 elapsed = (self.now - last_check[code]) / 60
                 if plenty_map.get(code):
