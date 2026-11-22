@@ -492,6 +492,19 @@ def main():
         run.lists()
     run.seats()
 
+    # 실행 간격 감시: 5분 주기 시간대인데 직전 실행과 너무 벌어지면 오류 메일(같은 오류는 한 번만)
+    sc, last = cfg["schedule"], st.get("last_run", 0)
+    if st["initialized"] and last:
+        gap = (run.now - last) / 60
+        base = sc["soldout_default_min"]
+        both_fast = soldout_interval(run.dt, sc) == base and             soldout_interval(datetime.fromtimestamp(last, KST), sc) == base
+        if both_fast and sc.get("gap_alert_min", 30) < gap < 360:  # 밤 휴식을 건넌 간격은 제외
+            run.err.setdefault("실행 주기", f"직전 실행과 {gap:.0f}분 간격입니다(예정 {base}분). "
+                               "Cloudflare 트리거가 멈췄거나 GitHub 토큰이 만료됐을 수 있습니다.")
+        else:
+            run.ok.add("실행 주기")
+    st["last_run"] = run.now
+
     if not st["initialized"]:
         if not st["goods"]:
             print("첫 실행인데 공연을 하나도 못 읽었습니다:", run.err, file=sys.stderr)

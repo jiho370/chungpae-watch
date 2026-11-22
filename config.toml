@@ -16,6 +16,8 @@ plenty_threshold = 20          # 저가석 합계가 이 수 이상이면 '넉�
 # ※ 실제 실행 시각은 .github/workflows/watch.yml의 cron이 정합니다(지금 값에 맞춰 둠).
 #   간격을 더 짧게 바꾸려면 cron도 같이 바꿔야 합니다.
 soldout_default_min = 5
+# 5분 주기 시간대에 실행 간격이 이 분 수를 넘으면 '실행 주기' 오류 메일(트리거 멈춤·토큰 만료 감지)
+gap_alert_min = 30
 soldout_intervals = [
   { from = "01:00", to = "03:00", every_min = 60 },
   { from = "03:00", to = "07:00", every_min = 0 },    # 쉬는 시간

@@ -1,0 +1,9 @@
+# wrangler CLI로 배포할 때 쓰는 설정 (대시보드에서 직접 붙여 넣는 경우엔 필요 없음)
+#   npx wrangler deploy
+#   npx wrangler secret put GH_TOKEN
+name = "chungpae-watch-trigger"
+main = "worker.js"
+compatibility_date = "2026-11-01"
+
+[triggers]
+crons = ["*/5 23,0-15 * * *", "*/30 22 * * *", "0 16-17 * * *"]
