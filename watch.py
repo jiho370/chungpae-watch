@@ -252,7 +252,7 @@ class Run:
                     # 넉넉한 공연: 업무시간에만, 업무 주기로
                     if not self.business or elapsed < sc["business_interval_min"] - 5:
                         continue
-                elif elapsed < so_min - min(so_min / 2, 15):
+                elif so_min == 0 or elapsed < so_min - min(so_min / 2, 15):
                     # 매진 공연: 시간대별 주기 (cron 지연을 감안해 여유를 둠)
                     continue
             prod = self.product(code)
@@ -299,11 +299,18 @@ class Run:
                     cur = rem[sg]
                     key = f"{code}:{seq}:{sg}"
                     prev = st["seats"].get(key)
-                    if prev == 0 and cur > 0 and st["initialized"] and code not in self.new:
-                        self.seat_alerts.append({
-                            "code": code, "date": s["playDate"], "time": s.get("playTime", ""),
+                    alerted = st.setdefault("alerted", {})
+                    info = {"code": code, "date": s["playDate"], "time": s.get("playTime", ""),
                             "grade": gr["name"], "price": gr["price"], "prev": prev, "cur": cur,
-                            "open": was_presale})
+                            "open": was_presale, "gone": False}
+                    if prev == 0 and cur > 0 and st["initialized"] and code not in self.new:
+                        self.seat_alerts.append(info)
+                        alerted[key] = self.now
+                    elif cur == 0 and key in alerted:
+                        # 알려 준 취소표가 다시 사라짐
+                        info["gone"] = True
+                        self.seat_alerts.append(info)
+                        del alerted[key]
                     st["seats"][key] = cur
                     total += cur
                     any_zero |= cur == 0
@@ -378,6 +385,13 @@ class Run:
         parts, subj = [], []
         for a in self.seat_alerts:
             g = st["goods"][a["code"]]
+            if a["gone"]:
+                parts.append(
+                    f"■ 다시 매진: {g['title']}\n"
+                    f"  일시: {fmt_date(a['date'], a['time'])}\n"
+                    f"  좌석: {a['grade']} {a['price']:,}원 — {a['prev']}석 → 0석\n"
+                    f"  앞서 알려 드린 자리가 모두 나갔습니다. 계속 취소표를 감시합니다.\n")
+                continue
             head = "티켓 오픈" if a["open"] else "저가석 풀림"
             parts.append(
                 f"■ {head}: {g['title']}\n"
@@ -387,11 +401,17 @@ class Run:
                 f"  예매(NOL): {g['link']}\n"
                 + (f"  청패 포인트: {sources.CP_PAGE} 에서 '포인트로 예매하기'\n" if g.get("chungpae")
                    else "  청패: 아직 청패 목록에 없음\n"))
-        if self.seat_alerts:
-            a = self.seat_alerts[0]
+        opened = [a for a in self.seat_alerts if not a["gone"]]
+        gone = [a for a in self.seat_alerts if a["gone"]]
+        if opened:
+            a = opened[0]
             t = st["goods"][a["code"]]["title"]
             subj.append(f"저가석 풀림 {t} {a['grade']} {a['cur']}석"
-                        + (f" 외 {len(self.seat_alerts) - 1}건" if len(self.seat_alerts) > 1 else ""))
+                        + (f" 외 {len(opened) - 1}건" if len(opened) > 1 else ""))
+        if gone:
+            a = gone[0]
+            t = st["goods"][a["code"]]["title"]
+            subj.append(f"다시 매진 {t} {a['grade']}" + (f" 외 {len(gone) - 1}건" if len(gone) > 1 else ""))
         self.new = self.ordered(self.new)
         for code in self.new:
             parts.append(self.describe(code, "새 공연"))

@@ -12,13 +12,14 @@ business_interval_min = 30
 plenty_threshold = 20          # 저가석 합계가 이 수 이상이면 '넉넉함'
 
 # ── 저가석 매진 공연(취소표 감시) 확인 간격 ──
-# 아래 시간대에 해당하면 그 간격, 아니면 soldout_default_min.
+# 아래 시간대에 해당하면 그 간격, 아니면 soldout_default_min. every_min = 0이면 확인하지 않음.
 # ※ 실제 실행 시각은 .github/workflows/watch.yml의 cron이 정합니다(지금 값에 맞춰 둠).
 #   간격을 더 짧게 바꾸려면 cron도 같이 바꿔야 합니다.
 soldout_default_min = 5
 soldout_intervals = [
-  { from = "01:00", to = "06:00", every_min = 60 },
-  { from = "06:00", to = "08:00", every_min = 30 },
+  { from = "01:00", to = "03:00", every_min = 60 },
+  { from = "03:00", to = "07:00", every_min = 0 },    # 쉬는 시간
+  { from = "07:00", to = "08:00", every_min = 30 },
 ]
 # 요청 사이 대기(초). 사이트 부담을 줄이기 위한 값이라 너무 줄이지 마세요.
 request_delay_sec = 0.7

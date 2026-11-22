@@ -4,8 +4,9 @@ on:
   schedule:
     # cron은 UTC 기준 (KST = UTC+9). GitHub 사정으로 몇 분씩 늦어질 수 있음.
     - cron: "*/5 23,0-15 * * *"   # KST 08:00~00:59  5분마다
-    - cron: "*/30 21-22 * * *"    # KST 06:00~07:59  30분마다
-    - cron: "0 16-20 * * *"       # KST 01:00~05:59  1시간마다
+    - cron: "*/30 22 * * *"       # KST 07:00~07:59  30분마다
+    - cron: "0 16-17 * * *"       # KST 01:00~02:59  1시간마다
+    # KST 03:00~06:59 는 실행 안 함
   workflow_dispatch:         # Actions 탭에서 수동 실행
 
 permissions:
