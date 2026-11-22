@@ -48,6 +48,17 @@ def fmt_date(d: str, t: str = "") -> str:
         return d
 
 
+def seat_rule_ok(rule: dict, g: dict, play_date: str = "") -> bool:
+    """취소표 확인 규칙: (분류 또는 공연장 또는 공연명 일치) 그리고 (요일 일치)."""
+    tier, venue, title = g.get("tier", ""), g.get("venue", ""), g.get("title", "")
+    hit = (any(tier.startswith(t) for t in rule.get("tiers", []))
+           or any(v in venue for v in rule.get("venues", []))
+           or any(k in title for k in rule.get("keywords", [])))
+    if hit and play_date and rule.get("weekdays"):
+        hit = WEEK[date.fromisoformat(play_date).weekday()] in rule["weekdays"]
+    return hit
+
+
 def _hm(s: str) -> int:
     h, m = s.split(":")
     return int(h) * 60 + int(m)
@@ -243,17 +254,12 @@ class Run:
         sc = cfg["schedule"]
         last_check, plenty_map = st.setdefault("last_check", {}), st.setdefault("plenty", {})
         so_min = soldout_interval(self.dt, sc)
-        fc = cfg.get("focus", {})
-        focus_on = bool(fc.get("until")) and self.today <= fc["until"]
+        rules = cfg.get("focus", {}).get("rules", [])
         for code, g in list(st["goods"].items()):
             if not g.get("qualified") or (g.get("end") and g["end"] < self.today):
                 continue
-            if focus_on:
-                # 기간 한정: 지정한 공연만 취소표 확인
-                title, tier = g.get("title", ""), g.get("tier", "")
-                if not (any(k in title for k in fc.get("keywords", []))
-                        or any(tier.startswith(t) for t in fc.get("tiers", []))):
-                    continue
+            if rules and not any(seat_rule_ok(r, g) for r in rules):
+                continue  # 어떤 규칙에도 해당하지 않는 공연은 취소표 확인 안 함
             if st["initialized"] and code not in self.new and code in last_check:  # 첫 판정 때는 전부 확인
                 elapsed = (self.now - last_check[code]) / 60
                 if plenty_map.get(code):
@@ -280,6 +286,10 @@ class Run:
             for s in prod["sched"]:
                 if s.get("playDate", "") < self.today:
                     continue
+                if rules:
+                    r = next((r for r in rules if not r.get("until") or s["playDate"] <= r["until"]), None)
+                    if not r or not seat_rule_ok(r, g, s["playDate"]):
+                        continue
                 seq = s["playSeq"]
                 try:
                     opn, cls = kst_ts(s["saleOpenTime"]), kst_ts(s["saleCloseTime"])
