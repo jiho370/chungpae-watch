@@ -426,7 +426,8 @@ class Run:
         for k, msg in self.err.items():
             if k not in st["errors"]:
                 st["errors"][k] = {"since": self.now, "msg": msg}
-                parts.append(f"■ 오류({k}): {msg}\n  사이트 구조 변경이나 접속 차단일 수 있습니다. 복구되면 다시 알려 드립니다.")
+                hint = "" if k == "실행 주기" else "사이트 구조 변경이나 접속 차단일 수 있습니다. "
+                parts.append(f"■ 오류({k}): {msg}\n  {hint}복구되면 다시 알려 드립니다.")
                 subj.append(f"오류 {k}")
         for k in list(st["errors"]):
             if k in self.ok and k not in self.err:

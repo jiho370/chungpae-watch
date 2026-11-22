@@ -60,6 +60,22 @@
 - 이전 상태는 Actions 캐시에 저장됩니다. 캐시가 사라지면 "감시 시작" 메일이 다시 오고, 개별 알림이 쏟아지지는 않습니다.
 - 실행이 실패하면(예: 메일 발송 실패) GitHub가 저장소 주인에게 실패 메일을 보냅니다.
 
+## 외부 트리거 (Cloudflare Workers) — 실행 주기 보강
+GitHub 예약 실행은 붐비면 몇 시간씩 밀리거나 빠집니다(실제로 하루 4번만 돈 적 있음). 그래서 Cloudflare Workers의 정시 실행으로 5분마다 워크플로를 직접 실행시킵니다. 수동 실행 요청은 거의 바로 시작됩니다. 워크플로의 cron은 예비용으로 남겨 둡니다(같이 돌아도 코드가 중복 확인을 건너뜀).
+
+1. **GitHub 토큰 만들기**: GitHub → Settings → Developer settings → Personal access tokens → **Fine-grained tokens** → Generate new token
+   - Repository access: **Only select repositories → chungpae-watch**
+   - Permissions → Repository permissions → **Actions: Read and write** (나머지는 건드리지 않음)
+   - 만료일을 정하고 만든 뒤 토큰을 복사
+2. **Cloudflare Worker 만들기**: [dash.cloudflare.com](https://dash.cloudflare.com) 가입 → Workers & Pages → Create → Worker → 이름 `chungpae-watch-trigger` → Deploy → Edit code에서 [trigger/worker.js](trigger/worker.js) 내용을 붙여 넣고 Deploy
+3. **비밀 변수**: Worker → Settings → Variables and Secrets → Add → Type **Secret**, 이름 `GH_TOKEN`, 값에 1번 토큰
+4. **정시 실행**: Worker → Settings → Trigger Events → Add → Cron Triggers에 아래 세 줄을 하나씩 추가(UTC 기준)
+   - `*/5 23,0-15 * * *` (KST 08~01시, 5분)
+   - `*/30 22 * * *` (KST 07~08시, 30분)
+   - `0 16-17 * * *` (KST 01~03시, 1시간)
+
+**토큰 만료**: 토큰이 만료되면 트리거가 멈춥니다. 5분 주기 시간대에 실행 간격이 30분을 넘으면 `[청패알림] 오류 실행 주기` 메일이 오니, 그때 토큰을 새로 만들어 3번만 다시 하면 됩니다.
+
 ## 내 PC에서 돌리기 (대안)
 Python 3.11 이상만 있으면 되고, 추가 패키지는 없습니다.
 
