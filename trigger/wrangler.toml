@@ -4,6 +4,7 @@
 name = "chungpae-watch-trigger"
 main = "worker.js"
 compatibility_date = "2026-11-01"
+workers_dev = false   # 정시 실행 전용이라 공개 주소 필요 없음
 
 [triggers]
 crons = ["*/5 23,0-15 * * *", "*/30 22 * * *", "0 16-17 * * *"]
