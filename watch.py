@@ -286,6 +286,8 @@ class Run:
             for s in prod["sched"]:
                 if s.get("playDate", "") < self.today:
                     continue
+                if s.get("playDate", "") in cfg.get("focus", {}).get("exclude_dates", []):
+                    continue
                 if rules:
                     r = next((r for r in rules if not r.get("until") or s["playDate"] <= r["until"]), None)
                     if not r or not seat_rule_ok(r, g, s["playDate"]):
